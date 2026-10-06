@@ -12,14 +12,14 @@ function initialTheme(): Theme {
 export function useTheme() {
   const [theme, setTheme] = useState<Theme>(initialTheme);
 
-  useEffect(() => {
-    document.documentElement.classList.toggle("dark", theme === "dark");
-    localStorage.setItem(STORAGE_KEY, theme);
-  }, [theme]);
-
-  const toggle = useCallback(() => {
-    setTheme((t) => (t === "light" ? "dark" : "light"));
+  const update = useCallback((next: Theme) => {
+    setTheme(next);
+    localStorage.setItem(STORAGE_KEY, next);
   }, []);
 
-  return { theme, toggle };
+  useEffect(() => {
+    document.documentElement.classList.toggle("dark", theme === "dark");
+  }, [theme]);
+
+  return { theme, setTheme: update };
 }

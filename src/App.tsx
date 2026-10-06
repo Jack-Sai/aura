@@ -7,7 +7,7 @@ import { useTheme, type Theme } from "./hooks/useTheme";
 import SettingsPage from "./pages/SettingsPage";
 import { StoreProvider, useStore } from "./store";
 
-function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
+function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
   const { busy, sendMessage, stop, activeSession } = useStore();
   const [view, setView] = useState<"chat" | "settings">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
@@ -28,8 +28,6 @@ function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => vo
 
       <div className="flex min-h-0 flex-1">
         <Sidebar
-          theme={theme}
-          onToggleTheme={onToggleTheme}
           settingsActive={view === "settings"}
           onOpenSettings={() => setView("settings")}
         />
@@ -37,7 +35,11 @@ function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => vo
         <main className="flex min-w-0 flex-1 flex-col">
           {view === "settings" ? (
             <div className="min-h-0 flex-1 overflow-y-auto">
-              <SettingsPage onClose={() => setView("chat")} />
+              <SettingsPage
+                onClose={() => setView("chat")}
+                theme={theme}
+                setTheme={setTheme}
+              />
             </div>
           ) : (
             <>
@@ -54,11 +56,11 @@ function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => vo
 }
 
 export default function App() {
-  const { theme, toggle } = useTheme();
+  const { theme, setTheme } = useTheme();
 
   return (
     <StoreProvider>
-      <Shell theme={theme} onToggleTheme={toggle} />
+      <Shell theme={theme} setTheme={setTheme} />
     </StoreProvider>
   );
 }

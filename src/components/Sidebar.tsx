@@ -1,13 +1,9 @@
 import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronRight, Plus, Settings, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
-import type { Theme } from "../hooks/useTheme";
 import { useStore } from "../store";
-import ThemeToggle from "./ThemeToggle";
 
 interface Props {
-  theme: Theme;
-  onToggleTheme: () => void;
   onOpenSettings: () => void;
   settingsActive?: boolean;
 }
@@ -17,12 +13,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
-export default function Sidebar({
-  theme,
-  onToggleTheme,
-  onOpenSettings,
-  settingsActive,
-}: Props) {
+export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
   const {
     workspaces,
     workspace,
@@ -64,11 +55,10 @@ export default function Sidebar({
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line">
-      <header className="flex items-center justify-between px-4 py-3">
+      <header className="px-4 py-3">
         <span className="text-base font-semibold tracking-[-0.02em]">
           Aura
         </span>
-        <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </header>
 
       <div className="flex items-center justify-between px-4 pb-1">

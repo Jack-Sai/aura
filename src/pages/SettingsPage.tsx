@@ -1,12 +1,15 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { ArrowLeft } from "lucide-react";
+import type { Theme } from "../hooks/useTheme";
 import { getGlobalRules, setGlobalRules } from "../lib/api";
 
 interface Props {
   onClose: () => void;
+  theme: Theme;
+  setTheme: (theme: Theme) => void;
 }
 
-export default function SettingsPage({ onClose }: Props) {
+export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const [rules, setRules] = useState("");
   const [saved, setSaved] = useState(false);
 
@@ -56,6 +59,37 @@ export default function SettingsPage({ onClose }: Props) {
         <h1 className="mt-5 text-2xl font-semibold tracking-[-0.03em]">
           设置
         </h1>
+
+        <section className="mt-6 rounded-card border border-line p-6">
+          <h2 className="text-sm font-semibold">外观</h2>
+          <div className="mt-4 flex items-center justify-between">
+            <span className="text-sm font-medium">主题</span>
+            <div className="flex rounded-full border border-line p-0.5">
+              <button
+                type="button"
+                onClick={() => setTheme("light")}
+                className={`rounded-full px-4 py-1 text-sm transition-colors ${
+                  theme === "light"
+                    ? "bg-brand text-white"
+                    : "text-subtle hover:text-foreground"
+                }`}
+              >
+                亮色
+              </button>
+              <button
+                type="button"
+                onClick={() => setTheme("dark")}
+                className={`rounded-full px-4 py-1 text-sm transition-colors ${
+                  theme === "dark"
+                    ? "bg-brand text-white"
+                    : "text-subtle hover:text-foreground"
+                }`}
+              >
+                暗色
+              </button>
+            </div>
+          </div>
+        </section>
 
         <section className="mt-6 rounded-card border border-line p-6">
           <h2 className="text-sm font-semibold">通用</h2>
