@@ -1,3 +1,4 @@
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::Mutex;
 
@@ -13,9 +14,18 @@ pub struct Session {
     pub model_idx: usize,
 }
 
+impl Session {
+    fn new() -> Self {
+        Self {
+            history: Vec::new(),
+            model_idx: 0,
+        }
+    }
+}
+
 pub struct AppState {
     pub client: OpenRouterClient,
-    pub session: AsyncMutex<Session>,
+    pub sessions: AsyncMutex<HashMap<String, Session>>,
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
 }
@@ -25,10 +35,7 @@ impl AppState {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         Self {
             client: OpenRouterClient::new(api_key),
-            session: AsyncMutex::new(Session {
-                history: Vec::new(),
-                model_idx: 0,
-            }),
+            sessions: AsyncMutex::new(HashMap::new()),
             workspace: Mutex::new(workspace),
             global_rules: Mutex::new(String::new()),
         }
@@ -43,6 +50,7 @@ fn lock_err<T>(_: T) -> String {
 pub async fn send_message(
     app: AppHandle,
     state: State<'_, AppState>,
+    session_id: String,
     message: String,
 ) -> Result<(), String> {
     let message = message.trim();
@@ -55,7 +63,8 @@ pub async fn send_message(
     let workspace = state.workspace.lock().map_err(lock_err)?.clone();
     let global_rules = state.global_rules.lock().map_err(lock_err)?.clone();
 
-    let mut session = state.session.lock().await;
+    let mut sessions = state.sessions.lock().await;
+    let session = sessions.entry(session_id).or_insert_with(Session::new);
     let session = &mut *session;
     let mut ctx = TurnContext {
         app: &app,
@@ -66,6 +75,12 @@ pub async fn send_message(
         model_idx: &mut session.model_idx,
     };
     run_turn(&mut ctx, message).await
+}
+
+#[tauri::command]
+pub async fn remove_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
+    state.sessions.lock().await.remove(&session_id);
+    Ok(())
 }
 
 #[tauri::command]
