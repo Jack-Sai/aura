@@ -56,9 +56,34 @@ fn push_assistant(history: &mut Vec<Value>, content: &str) {
     }
 }
 
+fn truncate_tail(s: &str, max: usize) -> String {
+    let chars: Vec<char> = s.chars().collect();
+    if chars.len() <= max {
+        return s.to_string();
+    }
+    let tail: String = chars[chars.len() - max..].iter().collect();
+    format!("…{}", tail)
+}
+
+fn normalize_tool_name(name: &str) -> String {
+    name.trim()
+        .to_lowercase()
+        .replace('-', "_")
+        .replace(' ', "_")
+}
+
 fn parse_tool_call(raw: &str) -> Result<(String, Value), String> {
+    let mut s = raw.trim();
+    if let Some(rest) = s.strip_prefix("```") {
+        let rest = rest.strip_prefix("json").unwrap_or(rest);
+        let rest = rest.trim_start_matches(['\n', '\r']);
+        s = match rest.rfind("```") {
+            Some(end) => rest[..end].trim_end(),
+            None => rest,
+        };
+    }
     let value: Value =
-        serde_json::from_str(raw).map_err(|e| format!("JSON parse failed - {}", e))?;
+        serde_json::from_str(s).map_err(|e| format!("JSON parse failed - {}", e))?;
     let name = value
         .get("name")
         .and_then(|v| v.as_str())
@@ -69,7 +94,10 @@ fn parse_tool_call(raw: &str) -> Result<(String, Value), String> {
 }
 
 fn is_known_tool(name: &str) -> bool {
-    matches!(name, "list_files" | "read_file" | "search_workspace")
+    matches!(
+        normalize_tool_name(name).as_str(),
+        "list_files" | "read_file" | "search_workspace"
+    )
 }
 
 pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(), String> {
@@ -223,6 +251,12 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     emit_done(ctx.app, ctx.session_id);
                     return Ok(());
                 }
+                emit_text(
+                    ctx.app,
+                    ctx.session_id,
+                    EV_NOTICE,
+                    "模型本轮未输出内容，正在重试",
+                );
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
@@ -244,7 +278,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let next = {
             let raw = tool_json.clone().unwrap_or_default();
             match parse_tool_call(&raw) {
-                Ok((name, args)) if is_known_tool(&name) => Next::Tool(name, args),
+                Ok((name, args)) if is_known_tool(&name) => {
+                    Next::Tool(normalize_tool_name(&name), args)
+                }
                 Ok((name, _)) => Next::Reject(format!(
                     "unknown tool '{}'，可用工具为 list_files、read_file、search_workspace",
                     name
@@ -256,8 +292,28 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         match next {
             Next::Reject(msg) => {
                 push_assistant(ctx.history, &turn_output);
+                emit_text(
+                    ctx.app,
+                    ctx.session_id,
+                    EV_NOTICE,
+                    &format!(
+                        "工具调用无效：{}；原文：{}",
+                        msg,
+                        truncate_tail(&turn_output, 200)
+                    ),
+                );
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
+                    if !turn_output.is_empty() {
+                        emit_text(
+                            ctx.app,
+                            ctx.session_id,
+                            EV_NOTICE,
+                            "多次工具调用无效，已将当前输出作为回答",
+                        );
+                        emit_done(ctx.app, ctx.session_id);
+                        return Ok(());
+                    }
                     emit_text(ctx.app, ctx.session_id, EV_ERROR, "模型解析失败，请重试。");
                     return Err("model output parse failed".into());
                 }
@@ -269,6 +325,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             }
             Next::Tool(name, args) => {
                 push_assistant(ctx.history, &turn_output);
+                parse_failures = 0;
 
                 let over_limit = matches!(
                     &consecutive,
@@ -301,5 +358,43 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 continue;
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parse_tool_call_plain() {
+        let (name, args) =
+            parse_tool_call(r#"{"name": "read_file", "args": {"path": "a.md"}}"#).unwrap();
+        assert_eq!(name, "read_file");
+        assert_eq!(args["path"], "a.md");
+    }
+
+    #[test]
+    fn parse_tool_call_strips_markdown_fence() {
+        let raw = "```json\n{\"name\": \"list_files\", \"args\": {\"path\": \"/\"}}\n```";
+        let (name, _) = parse_tool_call(raw).unwrap();
+        assert_eq!(name, "list_files");
+    }
+
+    #[test]
+    fn tool_name_normalization_accepts_variants() {
+        assert!(is_known_tool("Read-File"));
+        assert!(is_known_tool("read file"));
+        assert!(is_known_tool("READ_FILE"));
+        assert!(!is_known_tool("write_file"));
+        assert_eq!(normalize_tool_name(" Read-File "), "read_file");
+    }
+
+    #[test]
+    fn truncate_tail_keeps_suffix() {
+        assert_eq!(truncate_tail("短文本", 200), "短文本");
+        let long = "a".repeat(300);
+        let out = truncate_tail(&long, 200);
+        assert_eq!(out.chars().count(), 201);
+        assert!(out.starts_with('…'));
     }
 }
