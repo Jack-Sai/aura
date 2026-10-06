@@ -92,8 +92,12 @@ pub struct SseParser {
     buf: Vec<u8>,
     out: VecDeque<String>,
     reasoning: String,
+    event_count: usize,
+    raw_tail: String,
     finished: bool,
 }
+
+const RAW_TAIL_MAX: usize = 4000;
 
 impl SseParser {
     pub fn new() -> Self {
@@ -101,6 +105,8 @@ impl SseParser {
             buf: Vec::new(),
             out: VecDeque::new(),
             reasoning: String::new(),
+            event_count: 0,
+            raw_tail: String::new(),
             finished: false,
         }
     }
@@ -120,6 +126,16 @@ impl SseParser {
             return;
         };
         let data = data.trim();
+        self.event_count += 1;
+        self.raw_tail.push_str(data);
+        self.raw_tail.push('\n');
+        if self.raw_tail.len() > RAW_TAIL_MAX {
+            let cut = self.raw_tail.len() - RAW_TAIL_MAX;
+            let mut chars = self.raw_tail.char_indices().skip_while(|(i, _)| *i < cut);
+            if let Some((i, _)) = chars.next() {
+                self.raw_tail.drain(..i);
+            }
+        }
         if data == "[DONE]" {
             self.finished = true;
             return;
@@ -146,6 +162,17 @@ impl SseParser {
                 }
             }
         }
+        if let Some(details) = delta.and_then(|d| d.get("reasoning_details")) {
+            if let Some(arr) = details.as_array() {
+                for item in arr {
+                    if let Some(t) = item.get("text").and_then(|t| t.as_str()) {
+                        if !t.is_empty() {
+                            self.reasoning.push_str(t);
+                        }
+                    }
+                }
+            }
+        }
     }
 
     pub fn next(&mut self) -> Option<String> {
@@ -154,6 +181,10 @@ impl SseParser {
 
     pub fn take_reasoning(&mut self) -> String {
         std::mem::take(&mut self.reasoning)
+    }
+
+    pub fn diag(&self) -> (usize, String) {
+        (self.event_count, self.raw_tail.clone())
     }
 
     pub fn is_finished(&self) -> bool {
@@ -180,6 +211,10 @@ impl ChatStream {
 
     pub fn take_reasoning(&mut self) -> String {
         self.parser.take_reasoning()
+    }
+
+    pub fn diag(&self) -> (usize, String) {
+        self.parser.diag()
     }
 }
 
@@ -387,6 +422,18 @@ mod tests {
         assert_eq!(parser.next().as_deref(), Some("答案"));
         assert_eq!(parser.take_reasoning(), "思考一思考二");
         assert_eq!(parser.take_reasoning(), "");
+    }
+
+    #[test]
+    fn sse_extracts_reasoning_details_array() {
+        let mut parser = SseParser::new();
+        let input = "data: {\"choices\":[{\"delta\":{\"reasoning_details\":[\
+            {\"type\":\"reasoning_text\",\"text\":\"详细思考\"}]}}]}\n";
+        parser.feed(input.as_bytes());
+        assert_eq!(parser.take_reasoning(), "详细思考");
+        let (count, tail) = parser.diag();
+        assert_eq!(count, 1);
+        assert!(tail.contains("reasoning_details"));
     }
 
     #[test]

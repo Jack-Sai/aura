@@ -100,6 +100,19 @@ fn is_known_tool(name: &str) -> bool {
     )
 }
 
+fn write_diag_log(info: &str) {
+    let path = std::env::temp_dir().join("aura-diag.log");
+    let now = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|d| d.as_secs())
+        .unwrap_or(0);
+    use std::io::Write;
+    if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(path) {
+        let _ = writeln!(f, "[{}] {}", now, info);
+        let _ = writeln!(f, "----");
+    }
+}
+
 pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(), String> {
     ctx.history
         .push(json!({ "role": "user", "content": user_message }));
@@ -270,6 +283,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     EV_NOTICE,
                     "模型本轮未输出内容，正在重试",
                 );
+                {
+                    let (count, tail) = stream.diag();
+                    write_diag_log(&format!(
+                        "empty output; session={}; events={};\nraw tail:\n{}",
+                        ctx.session_id, count, tail
+                    ));
+                }
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
