@@ -58,7 +58,13 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
 
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line">
-      <header className="px-4 py-3">
+      <header className="flex items-center gap-2 px-4 py-3">
+        <img
+          src="/logo.png"
+          alt=""
+          draggable={false}
+          className="h-5 w-5 shrink-0"
+        />
         <span className="text-base font-semibold tracking-[-0.02em]">
           Aura
         </span>

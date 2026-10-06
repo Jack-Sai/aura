@@ -40,6 +40,12 @@ function EmptyState() {
   return (
     <div className="flex min-h-full items-center justify-center">
       <div className="text-center">
+        <img
+          src="/logo.png"
+          alt="Aura"
+          draggable={false}
+          className="mx-auto mb-3 h-16 w-16"
+        />
         <h2 className="text-2xl font-semibold tracking-[-0.03em]">Aura</h2>
         <p className="mt-2 text-sm text-subtle">
           Minimal surface. Maximum logic.
