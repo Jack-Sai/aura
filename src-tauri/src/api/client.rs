@@ -211,6 +211,10 @@ impl OpenRouterClient {
         Self { http, api_key }
     }
 
+    pub fn has_api_key(&self) -> bool {
+        self.api_key.is_some()
+    }
+
     fn request(&self, model: &str, messages: &[Value], stream: bool) -> reqwest::RequestBuilder {
         let mut req = self.http
             .post(ENDPOINT)
