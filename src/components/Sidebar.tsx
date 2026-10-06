@@ -1,5 +1,6 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { Plus, Settings, Trash2 } from "lucide-react";
+import { ChevronRight, Plus, Settings, Trash2 } from "lucide-react";
+import { useEffect, useState } from "react";
 import type { Theme } from "../hooks/useTheme";
 import { useStore } from "../store";
 import ThemeToggle from "./ThemeToggle";
@@ -23,9 +24,26 @@ export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props)
     activeId,
     switchWorkspace,
     newSession,
-    selectSession,
+    openSession,
     deleteSession,
   } = useStore();
+
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+
+  useEffect(() => {
+    if (workspace) {
+      setExpanded((prev) => new Set(prev).add(workspace));
+    }
+  }, [workspace]);
+
+  function toggleExpand(w: string) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(w)) next.delete(w);
+      else next.add(w);
+      return next;
+    });
+  }
 
   async function pickWorkspace() {
     try {
@@ -38,8 +56,6 @@ export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props)
     }
   }
 
-  const wsSessions = sessions.filter((s) => s.workspace === workspace);
-
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line">
       <header className="flex items-center justify-between px-4 py-3">
@@ -49,83 +65,111 @@ export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props)
         <ThemeToggle theme={theme} onToggle={onToggleTheme} />
       </header>
 
-      <div className="px-3">
-        <div className="mb-1 flex items-center justify-between px-1">
-          <span className="text-xs font-medium text-subtle">工作区</span>
-          <button
-            type="button"
-            onClick={pickWorkspace}
-            aria-label="添加工作区"
-            className="rounded p-0.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-        <ul className="space-y-0.5">
-          {workspaces.map((w) => (
-            <li key={w}>
-              <button
-                type="button"
-                onClick={() => switchWorkspace(w)}
-                title={w}
-                className={`flex w-full items-center gap-2 rounded-tag px-2 py-1.5 text-left text-sm transition-colors hover:bg-bubble ${
-                  w === workspace ? "bg-bubble font-medium" : "text-subtle"
-                }`}
-              >
-                <span
-                  className={`h-1.5 w-1.5 shrink-0 rounded-full ${
-                    w === workspace ? "bg-brand" : "bg-line"
-                  }`}
-                />
-                <span className="truncate">{basename(w)}</span>
-              </button>
-            </li>
-          ))}
-        </ul>
+      <div className="flex items-center justify-between px-4 pb-1">
+        <span className="text-[11px] font-medium tracking-[0.08em] text-subtle">
+          工作区
+        </span>
+        <button
+          type="button"
+          onClick={pickWorkspace}
+          aria-label="添加工作区"
+          className="rounded p-0.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+        >
+          <Plus size={14} />
+        </button>
       </div>
 
-      <div className="mt-5 min-h-0 flex-1 overflow-y-auto px-3 pb-4">
-        <div className="mb-1 flex items-center justify-between px-1">
-          <span className="text-xs font-medium text-subtle">对话</span>
-          <button
-            type="button"
-            onClick={newSession}
-            aria-label="新建对话"
-            className="rounded p-0.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
-          >
-            <Plus size={14} />
-          </button>
-        </div>
-        <ul className="space-y-0.5">
-          {wsSessions.map((s) => (
-            <li key={s.id}>
+      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+        {workspaces.map((w) => {
+          const isOpen = expanded.has(w);
+          const wsSessions = sessions.filter((s) => s.workspace === w);
+          const isCurrent = w === workspace;
+          return (
+            <section key={w} className="mb-0.5">
               <div
                 className={`group flex items-center rounded-tag transition-colors ${
-                  s.id === activeId ? "bg-bubble" : "hover:bg-bubble"
+                  isCurrent ? "bg-bubble" : "hover:bg-bubble"
                 }`}
               >
                 <button
                   type="button"
-                  onClick={() => selectSession(s.id)}
-                  className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
+                  onClick={() => toggleExpand(w)}
+                  aria-label={isOpen ? "折叠工作区" : "展开工作区"}
+                  className="flex w-6 shrink-0 items-center justify-center py-1.5 text-subtle"
                 >
-                  {s.title}
+                  <ChevronRight
+                    size={13}
+                    className={`transition-transform ${isOpen ? "rotate-90" : ""}`}
+                  />
                 </button>
                 <button
                   type="button"
-                  onClick={() => deleteSession(s.id)}
-                  aria-label="删除对话"
-                  className="mr-1 rounded p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                  onClick={() => switchWorkspace(w)}
+                  title={w}
+                  className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-sm"
                 >
-                  <Trash2 size={13} />
+                  <span
+                    className={`h-1.5 w-1.5 shrink-0 rounded-full ${
+                      isCurrent ? "bg-brand" : "bg-line"
+                    }`}
+                  />
+                  <span
+                    className={`truncate ${
+                      isCurrent ? "font-medium" : "text-subtle"
+                    }`}
+                  >
+                    {basename(w)}
+                  </span>
+                </button>
+                <button
+                  type="button"
+                  onClick={() => newSession(w)}
+                  aria-label="在此工作区新建对话"
+                  className="mr-1 rounded p-1 text-subtle opacity-0 transition-all hover:bg-surface hover:text-foreground group-hover:opacity-100"
+                >
+                  <Plus size={13} />
                 </button>
               </div>
-            </li>
-          ))}
-        </ul>
-        {wsSessions.length === 0 && (
-          <p className="px-1 py-2 text-xs text-subtle">暂无对话</p>
-        )}
+
+              {isOpen && (
+                <ul className="ml-5 mt-0.5 space-y-0.5">
+                  {wsSessions.map((s) => (
+                    <li key={s.id}>
+                      <div
+                        className={`group flex items-center rounded-tag transition-colors ${
+                          s.id === activeId
+                            ? "bg-bubble"
+                            : "hover:bg-bubble"
+                        }`}
+                      >
+                        <button
+                          type="button"
+                          onClick={() => openSession(s.id)}
+                          className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
+                        >
+                          {s.title}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => deleteSession(s.id)}
+                          aria-label="删除对话"
+                          className="mr-1 rounded p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                        >
+                          <Trash2 size={13} />
+                        </button>
+                      </div>
+                    </li>
+                  ))}
+                  {wsSessions.length === 0 && (
+                    <li className="px-2 py-1.5 text-xs text-subtle">
+                      暂无对话
+                    </li>
+                  )}
+                </ul>
+              )}
+            </section>
+          );
+        })}
       </div>
 
       <footer className="border-t border-line px-3 py-2">

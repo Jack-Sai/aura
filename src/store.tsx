@@ -50,8 +50,9 @@ interface StoreValue extends State {
   sendMessage: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
-  newSession: () => void;
+  newSession: (workspace?: string) => Promise<void>;
   selectSession: (id: string) => void;
+  openSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => void;
 }
 
@@ -343,11 +344,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
-  const newSession = useCallback(() => {
+  const newSession = useCallback(async (workspace?: string) => {
+    const ws = workspace ?? stateRef.current.workspace;
+    if (ws !== stateRef.current.workspace) {
+      try {
+        await setWorkspace(ws);
+      } catch {
+        return;
+      }
+    }
     setState((s) => {
-      const ns = createSession(s.workspace);
+      const ns = createSession(ws);
       return {
         ...s,
+        workspace: ws,
         sessions: [...s.sessions, ns],
         activeId: ns.id,
       };
@@ -356,6 +366,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const selectSession = useCallback((id: string) => {
     setState((s) => ({ ...s, activeId: id }));
+  }, []);
+
+  const openSession = useCallback(async (id: string) => {
+    const sess = stateRef.current.sessions.find((x) => x.id === id);
+    if (!sess) return;
+    if (sess.workspace !== stateRef.current.workspace) {
+      try {
+        await setWorkspace(sess.workspace);
+      } catch {
+        return;
+      }
+    }
+    setState((s) => ({ ...s, workspace: sess.workspace, activeId: id }));
   }, []);
 
   const deleteSession = useCallback((id: string) => {
@@ -386,9 +409,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       switchWorkspace,
       newSession,
       selectSession,
+      openSession,
       deleteSession,
     }),
-    [state, sendMessage, stop, switchWorkspace, newSession, selectSession, deleteSession],
+    [
+      state,
+      sendMessage,
+      stop,
+      switchWorkspace,
+      newSession,
+      selectSession,
+      openSession,
+      deleteSession,
+    ],
   );
 
   return (
