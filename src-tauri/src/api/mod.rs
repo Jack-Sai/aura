@@ -1,3 +1,3 @@
 pub mod client;
 
-pub use client::{ApiError, ChatStream, MODELS, OpenRouterClient};
+pub use client::{ApiError, ChatStream, Fallback, MODELS, OpenRouterClient};

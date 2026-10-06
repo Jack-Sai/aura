@@ -260,6 +260,68 @@ impl OpenRouterClient {
             .map(|s| s.to_string())
             .ok_or_else(|| ApiError::BadResponse("missing choices[0].message.content".into()))
     }
+
+    async fn with_fallback<T, F, Fut>(&self, start_idx: usize, f: F) -> Result<Fallback<T>, ApiError>
+    where
+        F: Fn(usize) -> Fut,
+        Fut: std::future::Future<Output = Result<T, ApiError>>,
+    {
+        let start = start_idx.min(MODELS.len() - 1);
+        let mut first_err: Option<ApiError> = None;
+        for offset in 0..MODELS.len() {
+            let idx = start + offset;
+            match f(idx).await {
+                Ok(value) => {
+                    let notice = if idx != start {
+                        let reason = match &first_err {
+                            Some(ApiError::RateLimited) => "限流",
+                            _ => "故障",
+                        };
+                        Some(format!(
+                            "主模型{}，已自动降级至 {}",
+                            reason, MODELS[idx].label
+                        ))
+                    } else {
+                        None
+                    };
+                    return Ok(Fallback {
+                        value,
+                        model_idx: idx,
+                        notice,
+                    });
+                }
+                Err(err) if err.is_retriable() && offset + 1 < MODELS.len() => {
+                    first_err.get_or_insert(err);
+                }
+                Err(err) => return Err(err),
+            }
+        }
+        Err(first_err.unwrap_or_else(|| ApiError::BadResponse("model list empty".into())))
+    }
+
+    pub async fn stream_with_fallback(
+        &self,
+        start_idx: usize,
+        messages: &[Value],
+    ) -> Result<Fallback<ChatStream>, ApiError> {
+        self.with_fallback(start_idx, |idx| self.stream(MODELS[idx].id, messages))
+            .await
+    }
+
+    pub async fn complete_with_fallback(
+        &self,
+        start_idx: usize,
+        messages: &[Value],
+    ) -> Result<Fallback<String>, ApiError> {
+        self.with_fallback(start_idx, |idx| self.complete(MODELS[idx].id, messages))
+            .await
+    }
+}
+
+pub struct Fallback<T> {
+    pub value: T,
+    pub model_idx: usize,
+    pub notice: Option<String>,
 }
 
 #[cfg(test)]
