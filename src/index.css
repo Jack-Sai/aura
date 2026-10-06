@@ -54,15 +54,39 @@
   font-display: swap;
 }
 
+@font-face {
+  font-family: "Source Han Sans SC";
+  src: url("./assets/fonts/SourceHanSansSC-Regular.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Han Sans SC";
+  src: url("./assets/fonts/SourceHanSansSC-Medium.otf") format("opentype");
+  font-weight: 500;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: "Source Han Sans SC";
+  src: url("./assets/fonts/SourceHanSansSC-Bold.otf") format("opentype");
+  font-weight: 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ---------------------------------------------------------------
    Pinguo Design System — static tokens
    --------------------------------------------------------------- */
 
 @theme {
-  --font-sans: "DM Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI",
-    sans-serif;
+  --font-sans: "DM Sans", "Source Han Sans SC", ui-sans-serif, system-ui,
+    -apple-system, "Segoe UI", sans-serif;
   --font-mono: "JetBrains Mono", ui-monospace, "Cascadia Code", Consolas,
-    monospace;
+    "Source Han Sans SC", monospace;
 
   --color-brand: #0066cc;
   --color-brand-strong: #0052a3;
