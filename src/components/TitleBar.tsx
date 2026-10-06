@@ -11,7 +11,7 @@ export default function TitleBar() {
   useEffect(() => {
     getVersion()
       .then((v) => setVersion(v))
-      .catch(() => setVersion("0.0.0"));
+      .catch(() => setVersion("0.1.0"));
   }, []);
 
   return (
