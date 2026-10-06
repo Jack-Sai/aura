@@ -100,7 +100,7 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         <div
           role="listbox"
           aria-label="模型列表"
-          className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[300px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[420px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
         >
           {groups.map((g) => (
             <div key={g.vendor}>
@@ -120,27 +120,31 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
                       onChange(m.id);
                       setOpen(false);
                     }}
-                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                    className={`flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors ${
                       isActive ? "bg-bubble" : "hover:bg-bubble"
                     }`}
                   >
                     <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                    {p.params && (
-                      <span className="shrink-0 rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle">
-                        {p.params}
-                      </span>
-                    )}
-                    {p.tags.map((t) => (
-                      <span
-                        key={t}
-                        className="shrink-0 rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle"
-                      >
-                        {t}
-                      </span>
-                    ))}
-                    {isActive && (
-                      <Check size={13} className="shrink-0 text-brand" />
-                    )}
+                    <span className="flex shrink-0 items-center gap-1.5">
+                      {p.params && (
+                        <span className="rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle">
+                          {p.params}
+                        </span>
+                      )}
+                      {p.tags.map((t) => (
+                        <span
+                          key={t}
+                          className="rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle"
+                        >
+                          {t}
+                        </span>
+                      ))}
+                    </span>
+                    <span className="flex w-5 shrink-0 justify-end">
+                      {isActive && (
+                        <Check size={13} className="text-brand" />
+                      )}
+                    </span>
                   </button>
                 );
               })}
