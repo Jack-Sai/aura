@@ -58,7 +58,7 @@ export default function MessageList() {
   }
 
   return (
-    <div className="mx-auto flex w-full max-w-3xl flex-col gap-6 px-6 py-6">
+    <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-6 xl:max-w-5xl 2xl:max-w-6xl">
       {messages.map((m, i) =>
         m.role === "user" ? (
           <UserBubble key={i} content={m.content} />

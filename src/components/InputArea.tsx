@@ -48,7 +48,7 @@ export default function InputArea({
 
   return (
     <div className="px-6 pb-5 pt-3">
-      <div className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-card border border-line bg-surface px-4 py-3 shadow-xs transition-colors focus-within:border-brand focus-within:shadow-sm">
+      <div className="mx-auto flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-end gap-2 rounded-card border border-line bg-surface px-4 py-3 shadow-xs transition-colors focus-within:border-brand focus-within:shadow-sm">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -79,7 +79,7 @@ export default function InputArea({
           </button>
         )}
       </div>
-      <div className="mx-auto mt-2 flex w-full max-w-3xl items-center justify-between">
+      <div className="mx-auto mt-2 flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-center justify-between">
         <ModelSelect
           models={models}
           selectedModel={selectedModel}
