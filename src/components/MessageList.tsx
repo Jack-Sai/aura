@@ -1,4 +1,5 @@
 import { useStore, type Block } from "../store";
+import { ActionRow, ErrorRow, NoticeRow } from "./ActionRow";
 import Markdown from "./Markdown";
 
 function UserBubble({ content }: { content: string }) {
@@ -11,16 +12,21 @@ function UserBubble({ content }: { content: string }) {
   );
 }
 
+function renderBlock(block: Block, i: number) {
+  switch (block.kind) {
+    case "text":
+      return <Markdown key={i} content={block.text} />;
+    case "action":
+      return <ActionRow key={i} text={block.text} />;
+    case "notice":
+      return <NoticeRow key={i} text={block.text} />;
+    case "error":
+      return <ErrorRow key={i} text={block.text} />;
+  }
+}
+
 function AssistantMessage({ blocks }: { blocks: Block[] }) {
-  return (
-    <div className="flex flex-col gap-4">
-      {blocks
-        .filter((b) => b.kind === "text")
-        .map((b, i) => (
-          <Markdown key={i} content={b.text} />
-        ))}
-    </div>
-  );
+  return <div className="flex flex-col gap-3">{blocks.map(renderBlock)}</div>;
 }
 
 function EmptyState() {
