@@ -11,6 +11,40 @@ use commands::{
 };
 use tauri::Manager;
 
+#[cfg(windows)]
+mod win_icon {
+    #[link(name = "user32")]
+    extern "system" {
+        fn SendMessageW(hWnd: isize, msg: u32, wParam: usize, lParam: isize) -> isize;
+        fn CreateIconFromResourceEx(
+            presbits: *mut u8,
+            cb_size: u32,
+            is_icon: i32,
+            version: u32,
+            cx_desired: i32,
+            cy_desired: i32,
+            ui_flags: u32,
+        ) -> isize;
+    }
+
+    /// Tauri 仅设置窗口 Small 图标；任务栏/跳转列表使用的 Big 图标缺失时
+    /// Windows 会回退到系统默认图标，这里手动补设。
+    pub unsafe fn set_taskbar_icon(hwnd: isize, png: &[u8]) {
+        let hicon = CreateIconFromResourceEx(
+            png.as_ptr() as *mut u8,
+            png.len() as u32,
+            1,
+            0x0003_0000,
+            0,
+            0,
+            0x0000_0040, // LR_DEFAULTSIZE
+        );
+        if hicon != 0 {
+            SendMessageW(hwnd, 0x0080 /* WM_SETICON */, 1 /* ICON_BIG */, hicon);
+        }
+    }
+}
+
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
 fn greet(name: &str) -> String {
@@ -25,6 +59,20 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            #[cfg(any(windows, target_os = "linux"))]
+            if let Some(window) = app.get_webview_window("main") {
+                let icon = tauri::include_image!("icons/128x128.png");
+                let _ = window.set_icon(icon);
+                #[cfg(windows)]
+                if let Ok(hwnd) = window.hwnd() {
+                    unsafe {
+                        win_icon::set_taskbar_icon(
+                            hwnd.0 as isize,
+                            include_bytes!("../icons/128x128.png"),
+                        );
+                    }
+                }
+            }
             let dir = app.path().app_data_dir()?;
             std::fs::create_dir_all(&dir)?;
             let db = db::open(&dir.join("aura.db"))?;
