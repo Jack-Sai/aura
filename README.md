@@ -25,10 +25,13 @@
 
 ## 截图
 
-<!-- 截图占位：素材存放于 assets/images/，待补充
-![对话](assets/images/chat.png)
-![设置](assets/images/settings.png)
--->
+| 欢迎页 | 基础对话 |
+| --- | --- |
+| ![欢迎页](assets/images/主页面——无对话.png) | ![基础对话](assets/images/基础对话.png) |
+
+| 工具调用过程 | 工具调用结果 |
+| --- | --- |
+| ![工具调用 1](assets/images/工具调用1.png) | ![工具调用 2](assets/images/工具调用2.png) |
 
 ## 开发
 
