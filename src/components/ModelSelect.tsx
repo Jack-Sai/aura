@@ -1,5 +1,5 @@
 import { Check, ChevronUp } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import type { ModelInfo } from "../lib/api";
 
 interface Props {
@@ -11,6 +11,7 @@ interface Props {
 export interface ParsedModel {
   vendor: string;
   name: string;
+  params: string;
   tags: string[];
 }
 
@@ -26,8 +27,16 @@ export function parseModelId(id: string): ParsedModel {
         .split(":")
         .filter(Boolean)
     : [];
-  const name = core.replace(/-(?=\d+(?:\.\d+)?b(?:-|$))/, " ");
-  return { vendor, name, tags };
+  const m = core.match(/^(.*?)-(?=\d+(?:\.\d+)?b(?:-|$))/);
+  const hasSplit = Boolean(m && m[1]);
+  const name = hasSplit ? (m as RegExpMatchArray)[1] : core;
+  const params = hasSplit ? core.slice((m as RegExpMatchArray)[1].length + 1) : "";
+  return { vendor, name, params, tags };
+}
+
+interface ModelGroup {
+  vendor: string;
+  models: ModelInfo[];
 }
 
 export default function ModelSelect({ models, selectedModel, onChange }: Props) {
@@ -50,6 +59,17 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
     };
   }, [open]);
 
+  const groups = useMemo<ModelGroup[]>(() => {
+    const out: ModelGroup[] = [];
+    for (const m of models) {
+      const { vendor } = parseModelId(m.id);
+      const last = out[out.length - 1];
+      if (last && last.vendor === vendor) last.models.push(m);
+      else out.push({ vendor, models: [m] });
+    }
+    return out;
+  }, [models]);
+
   const selected = models.find((m) => m.id === selectedModel);
   const parsed = selected ? parseModelId(selected.id) : null;
 
@@ -61,10 +81,14 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         aria-label="选择模型"
         aria-expanded={open}
         disabled={models.length === 0}
-        className="flex max-w-[220px] items-center gap-1.5 rounded-full border border-line bg-surface py-1 pl-3 pr-2.5 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
+        className="flex max-w-[240px] items-center gap-1.5 rounded-full border border-line bg-surface py-1 pl-3 pr-2.5 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
       >
         <span className="truncate">
-          {parsed ? parsed.name : "加载中…"}
+          {parsed
+            ? parsed.params
+              ? `${parsed.name} ${parsed.params}`
+              : parsed.name
+            : "加载中…"}
         </span>
         <ChevronUp
           size={12}
@@ -76,43 +100,52 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         <div
           role="listbox"
           aria-label="模型列表"
-          className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[280px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[300px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
         >
-          {models.map((m) => {
-            const p = parseModelId(m.id);
-            const isActive = m.id === selectedModel;
-            return (
-              <button
-                key={m.id}
-                type="button"
-                role="option"
-                aria-selected={isActive}
-                onClick={() => {
-                  onChange(m.id);
-                  setOpen(false);
-                }}
-                className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
-                  isActive ? "bg-bubble" : "hover:bg-bubble"
-                }`}
-              >
-                <span className="shrink-0 text-[11px] text-subtle">
-                  {p.vendor}
-                </span>
-                <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                {p.tags.map((t) => (
-                  <span
-                    key={t}
-                    className="shrink-0 rounded-tag border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle"
+          {groups.map((g) => (
+            <div key={g.vendor}>
+              <div className="px-3 pb-1 pt-2 text-[11px] text-subtle">
+                {g.vendor}
+              </div>
+              {g.models.map((m) => {
+                const p = parseModelId(m.id);
+                const isActive = m.id === selectedModel;
+                return (
+                  <button
+                    key={m.id}
+                    type="button"
+                    role="option"
+                    aria-selected={isActive}
+                    onClick={() => {
+                      onChange(m.id);
+                      setOpen(false);
+                    }}
+                    className={`flex w-full items-center gap-2 px-3 py-2 text-left text-sm transition-colors ${
+                      isActive ? "bg-bubble" : "hover:bg-bubble"
+                    }`}
                   >
-                    {t}
-                  </span>
-                ))}
-                {isActive && (
-                  <Check size={13} className="shrink-0 text-brand" />
-                )}
-              </button>
-            );
-          })}
+                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
+                    {p.params && (
+                      <span className="shrink-0 rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle">
+                        {p.params}
+                      </span>
+                    )}
+                    {p.tags.map((t) => (
+                      <span
+                        key={t}
+                        className="shrink-0 rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle"
+                      >
+                        {t}
+                      </span>
+                    ))}
+                    {isActive && (
+                      <Check size={13} className="shrink-0 text-brand" />
+                    )}
+                  </button>
+                );
+              })}
+            </div>
+          ))}
         </div>
       )}
     </div>
