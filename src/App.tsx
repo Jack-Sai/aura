@@ -1,3 +1,4 @@
+import InputArea from "./components/InputArea";
 import MessageList from "./components/MessageList";
 import Sidebar from "./components/Sidebar";
 import { useTheme } from "./hooks/useTheme";
@@ -15,6 +16,7 @@ export default function App() {
           <div className="min-h-0 flex-1 overflow-y-auto">
             <MessageList />
           </div>
+          <InputArea busy={false} onSend={() => {}} onStop={() => {}} />
         </main>
       </div>
     </StoreProvider>
