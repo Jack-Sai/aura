@@ -244,6 +244,19 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 return Ok(());
             }
             if tool_json.is_none() {
+                // content 为空但模型输出了 reasoning（思考）时，以思考内容兜底
+                if turn_output.is_empty() {
+                    let reasoning = stream.take_reasoning();
+                    if !reasoning.is_empty() {
+                        turn_output.push_str(&reasoning);
+                        emit_text(
+                            ctx.app,
+                            ctx.session_id,
+                            EV_NOTICE,
+                            "本轮仅有思考过程，已将其作为内容展示",
+                        );
+                    }
+                }
                 // 模型未输出 <answer> 标签，但流正常结束且已有正文：
                 // 视为模型直接作答，宽容接受，不再强制协议标签。
                 if !turn_output.is_empty() {

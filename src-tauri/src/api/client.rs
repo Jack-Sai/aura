@@ -91,6 +91,7 @@ fn classify_reqwest(err: reqwest::Error) -> ApiError {
 pub struct SseParser {
     buf: Vec<u8>,
     out: VecDeque<String>,
+    reasoning: String,
     finished: bool,
 }
 
@@ -99,6 +100,7 @@ impl SseParser {
         Self {
             buf: Vec::new(),
             out: VecDeque::new(),
+            reasoning: String::new(),
             finished: false,
         }
     }
@@ -125,10 +127,11 @@ impl SseParser {
         let Ok(value) = serde_json::from_str::<Value>(data) else {
             return;
         };
-        let text = value
+        let delta = value
             .get("choices")
             .and_then(|c| c.get(0))
-            .and_then(|c| c.get("delta"))
+            .and_then(|c| c.get("delta"));
+        let text = delta
             .and_then(|d| d.get("content"))
             .and_then(|c| c.as_str());
         if let Some(text) = text {
@@ -136,10 +139,21 @@ impl SseParser {
                 self.out.push_back(text.to_string());
             }
         }
+        for key in ["reasoning", "reasoning_content"] {
+            if let Some(r) = delta.and_then(|d| d.get(key)).and_then(|r| r.as_str()) {
+                if !r.is_empty() {
+                    self.reasoning.push_str(r);
+                }
+            }
+        }
     }
 
     pub fn next(&mut self) -> Option<String> {
         self.out.pop_front()
+    }
+
+    pub fn take_reasoning(&mut self) -> String {
+        std::mem::take(&mut self.reasoning)
     }
 
     pub fn is_finished(&self) -> bool {
@@ -162,6 +176,10 @@ impl ChatStream {
             pending: None,
             done: false,
         }
+    }
+
+    pub fn take_reasoning(&mut self) -> String {
+        self.parser.take_reasoning()
     }
 }
 
@@ -236,6 +254,7 @@ impl OpenRouterClient {
                 "model": model,
                 "messages": messages,
                 "stream": stream,
+                "max_tokens": 16384,
             }));
         if let Ok(guard) = self.api_key.read() {
             if let Some(key) = guard.as_ref() {
@@ -356,6 +375,18 @@ mod tests {
         assert_eq!(parser.next(), None);
         parser.feed(&bytes[20..]);
         assert_eq!(parser.next().as_deref(), Some("你好"));
+    }
+
+    #[test]
+    fn sse_accumulates_reasoning() {
+        let mut parser = SseParser::new();
+        let input = "data: {\"choices\":[{\"delta\":{\"reasoning\":\"思考一\"}}]}\n\
+              data: {\"choices\":[{\"delta\":{\"reasoning_content\":\"思考二\"}}]}\n\
+              data: {\"choices\":[{\"delta\":{\"content\":\"答案\"}}]}\n";
+        parser.feed(input.as_bytes());
+        assert_eq!(parser.next().as_deref(), Some("答案"));
+        assert_eq!(parser.take_reasoning(), "思考一思考二");
+        assert_eq!(parser.take_reasoning(), "");
     }
 
     #[test]
