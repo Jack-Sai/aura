@@ -66,3 +66,16 @@ export function getSelectedModel(): Promise<string> {
 export function setSelectedModel(id: string): Promise<void> {
   return invoke("set_selected_model", { id });
 }
+
+export interface ApiConfig {
+  provider: string;
+  api_key: string;
+}
+
+export function getApiConfig(): Promise<ApiConfig> {
+  return invoke("get_api_config");
+}
+
+export function setApiConfig(provider: string, apiKey: string): Promise<void> {
+  return invoke("set_api_config", { provider, apiKey });
+}

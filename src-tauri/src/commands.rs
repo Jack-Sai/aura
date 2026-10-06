@@ -37,7 +37,7 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub fn new(api_key: Option<String>, db: Connection) -> Self {
+    pub fn new(env_api_key: Option<String>, db: Connection) -> Self {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
         let global_rules = db::get_setting(&db, "global_rules")
             .ok()
@@ -48,6 +48,12 @@ impl AppState {
             .flatten()
             .and_then(|id| MODELS.iter().position(|m| m.id == id))
             .unwrap_or(0);
+        let api_key = db::get_setting(&db, "openrouter_api_key")
+            .ok()
+            .flatten()
+            .filter(|k| !k.trim().is_empty())
+            .map(|k| k.trim().to_string())
+            .or(env_api_key);
         Self {
             client: OpenRouterClient::new(api_key),
             sessions: AsyncMutex::new(HashMap::new()),
@@ -246,4 +252,40 @@ pub fn set_selected_model(state: State<'_, AppState>, id: String) -> Result<(), 
     }
     let db = state.db.lock().map_err(lock_err)?;
     db::set_setting(&db, "model_id", &id).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct ApiConfig {
+    pub provider: String,
+    pub api_key: String,
+}
+
+#[tauri::command]
+pub fn get_api_config(state: State<'_, AppState>) -> ApiConfig {
+    ApiConfig {
+        provider: "openrouter".to_string(),
+        api_key: state.client.api_key().unwrap_or_default(),
+    }
+}
+
+#[tauri::command]
+pub fn set_api_config(
+    state: State<'_, AppState>,
+    provider: String,
+    api_key: String,
+) -> Result<(), String> {
+    if provider != "openrouter" {
+        return Err("暂只支持 OpenRouter".to_string());
+    }
+    let key = api_key.trim().to_string();
+    let effective = if key.is_empty() {
+        std::env::var("OPENROUTER_API_KEY")
+            .ok()
+            .filter(|k| !k.trim().is_empty())
+    } else {
+        Some(key.clone())
+    };
+    state.client.set_api_key(effective);
+    let db = state.db.lock().map_err(lock_err)?;
+    db::set_setting(&db, "openrouter_api_key", &key).map_err(|e| e.to_string())
 }

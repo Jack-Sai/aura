@@ -199,7 +199,7 @@ impl Stream for ChatStream {
 
 pub struct OpenRouterClient {
     http: reqwest::Client,
-    api_key: Option<String>,
+    api_key: std::sync::RwLock<Option<String>>,
 }
 
 impl OpenRouterClient {
@@ -208,11 +208,24 @@ impl OpenRouterClient {
             .connect_timeout(std::time::Duration::from_secs(10))
             .build()
             .expect("failed to build http client");
-        Self { http, api_key }
+        Self {
+            http,
+            api_key: std::sync::RwLock::new(api_key),
+        }
     }
 
     pub fn has_api_key(&self) -> bool {
-        self.api_key.is_some()
+        self.api_key.read().map(|k| k.is_some()).unwrap_or(false)
+    }
+
+    pub fn api_key(&self) -> Option<String> {
+        self.api_key.read().ok().and_then(|g| g.clone())
+    }
+
+    pub fn set_api_key(&self, key: Option<String>) {
+        if let Ok(mut g) = self.api_key.write() {
+            *g = key;
+        }
     }
 
     fn request(&self, model: &str, messages: &[Value], stream: bool) -> reqwest::RequestBuilder {
@@ -224,8 +237,10 @@ impl OpenRouterClient {
                 "messages": messages,
                 "stream": stream,
             }));
-        if let Some(key) = &self.api_key {
-            req = req.bearer_auth(key);
+        if let Ok(guard) = self.api_key.read() {
+            if let Some(key) = guard.as_ref() {
+                req = req.bearer_auth(key);
+            }
         }
         req
     }

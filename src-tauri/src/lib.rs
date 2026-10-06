@@ -5,9 +5,9 @@ pub mod db;
 pub mod tools;
 
 use commands::{
-    get_global_rules, get_models, get_selected_model, get_workspace, load_sessions,
-    remove_session, save_session, send_message, set_global_rules, set_selected_model,
-    set_workspace, stop_message, AppState,
+    get_api_config, get_global_rules, get_models, get_selected_model, get_workspace,
+    load_sessions, remove_session, save_session, send_message, set_api_config, set_global_rules,
+    set_selected_model, set_workspace, stop_message, AppState,
 };
 use tauri::Manager;
 
@@ -44,7 +44,9 @@ pub fn run() {
             set_global_rules,
             get_models,
             get_selected_model,
-            set_selected_model
+            set_selected_model,
+            get_api_config,
+            set_api_config
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
