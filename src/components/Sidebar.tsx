@@ -9,6 +9,7 @@ interface Props {
   theme: Theme;
   onToggleTheme: () => void;
   onOpenSettings: () => void;
+  settingsActive?: boolean;
 }
 
 function basename(p: string): string {
@@ -16,7 +17,12 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
-export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props) {
+export default function Sidebar({
+  theme,
+  onToggleTheme,
+  onOpenSettings,
+  settingsActive,
+}: Props) {
   const {
     workspaces,
     workspace,
@@ -176,7 +182,11 @@ export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props)
         <button
           type="button"
           onClick={onOpenSettings}
-          className="flex w-full items-center gap-2 rounded-tag px-2 py-1.5 text-sm text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+          className={`flex w-full items-center gap-2 rounded-tag px-2 py-1.5 text-sm transition-colors hover:bg-bubble hover:text-foreground ${
+            settingsActive
+              ? "bg-bubble font-medium text-foreground"
+              : "text-subtle"
+          }`}
         >
           <Settings size={14} />
           设置
