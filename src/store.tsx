@@ -52,7 +52,7 @@ interface StoreValue extends State {
   switchWorkspace: (path: string) => Promise<void>;
   newSession: () => void;
   selectSession: (id: string) => void;
-  deleteSession: (id: string) => Promise<void>;
+  deleteSession: (id: string) => void;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -194,7 +194,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const chars = Array.from(buf);
       const n = Math.min(
         chars.length,
-        chars.length > 90 ? 6 : chars.length > 30 ? 3 : 1,
+        chars.length > 150 ? 8 : chars.length > 50 ? 3 : 1,
       );
       const take = chars.slice(0, n).join("");
       bufferRef.current = chars.slice(n).join("");
@@ -206,7 +206,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const drainBuffer = useCallback(async () => {
     const start = Date.now();
     while (bufferRef.current && Date.now() - start < 5000) {
-      await new Promise((r) => setTimeout(r, 40));
+      const stream = streamRef.current;
+      if (!stream) break;
+      const chars = Array.from(bufferRef.current);
+      const n = Math.max(1, Math.ceil(chars.length / 3));
+      const take = chars.slice(0, n).join("");
+      bufferRef.current = chars.slice(n).join("");
+      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, take));
+      await new Promise((r) => setTimeout(r, 30));
     }
     const rest = bufferRef.current;
     bufferRef.current = "";
@@ -351,8 +358,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     setState((s) => ({ ...s, activeId: id }));
   }, []);
 
-  const deleteSession = useCallback(async (id: string) => {
-    await removeSession(id);
+  const deleteSession = useCallback((id: string) => {
+    removeSession(id).catch(() => {});
     setState((s) => {
       let sessions = s.sessions.filter((x) => x.id !== id);
       let activeId = s.activeId;

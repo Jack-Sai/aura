@@ -28,9 +28,13 @@ export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props)
   } = useStore();
 
   async function pickWorkspace() {
-    const dir = await open({ directory: true, title: "选择工作区目录" });
-    if (typeof dir === "string") {
-      await switchWorkspace(dir);
+    try {
+      const dir = await open({ directory: true, title: "选择工作区目录" });
+      if (typeof dir === "string") {
+        await switchWorkspace(dir);
+      }
+    } catch {
+      /* 用户取消或目录无效时静默 */
     }
   }
 

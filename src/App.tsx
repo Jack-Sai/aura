@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import InputArea from "./components/InputArea";
 import MessageList from "./components/MessageList";
 import SettingsModal from "./components/SettingsModal";
@@ -7,8 +7,18 @@ import { useTheme, type Theme } from "./hooks/useTheme";
 import { StoreProvider, useStore } from "./store";
 
 function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => void }) {
-  const { busy, sendMessage, stop } = useStore();
+  const { busy, sendMessage, stop, activeSession } = useStore();
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const scrollRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const el = scrollRef.current;
+    if (!el) return;
+    const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
+    if (nearBottom) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [activeSession?.messages]);
 
   return (
     <div className="flex h-screen overflow-hidden bg-surface text-foreground">
@@ -19,7 +29,7 @@ function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => vo
       />
 
       <main className="flex min-w-0 flex-1 flex-col">
-        <div className="min-h-0 flex-1 overflow-y-auto">
+        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
           <MessageList />
         </div>
         <InputArea busy={busy} onSend={sendMessage} onStop={stop} />
