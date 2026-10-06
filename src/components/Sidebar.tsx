@@ -1,5 +1,5 @@
 import { open } from "@tauri-apps/plugin-dialog";
-import { Plus, Trash2 } from "lucide-react";
+import { Plus, Settings, Trash2 } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import { useStore } from "../store";
 import ThemeToggle from "./ThemeToggle";
@@ -7,6 +7,7 @@ import ThemeToggle from "./ThemeToggle";
 interface Props {
   theme: Theme;
   onToggleTheme: () => void;
+  onOpenSettings: () => void;
 }
 
 function basename(p: string): string {
@@ -14,7 +15,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
-export default function Sidebar({ theme, onToggleTheme }: Props) {
+export default function Sidebar({ theme, onToggleTheme, onOpenSettings }: Props) {
   const {
     workspaces,
     workspace,
@@ -122,6 +123,17 @@ export default function Sidebar({ theme, onToggleTheme }: Props) {
           <p className="px-1 py-2 text-xs text-subtle">暂无对话</p>
         )}
       </div>
+
+      <footer className="border-t border-line px-3 py-2">
+        <button
+          type="button"
+          onClick={onOpenSettings}
+          className="flex w-full items-center gap-2 rounded-tag px-2 py-1.5 text-sm text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+        >
+          <Settings size={14} />
+          设置
+        </button>
+      </footer>
     </aside>
   );
 }

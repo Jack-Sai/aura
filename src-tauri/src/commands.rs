@@ -3,12 +3,14 @@ use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
+use rusqlite::Connection;
 use serde_json::Value;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::runner::{run_turn, TurnContext};
 use crate::api::OpenRouterClient;
+use crate::db;
 
 pub struct Session {
     pub history: Vec<Value>,
@@ -30,17 +32,23 @@ pub struct AppState {
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
     pub cancelled: AtomicBool,
+    pub db: Mutex<Connection>,
 }
 
 impl AppState {
-    pub fn new(api_key: Option<String>) -> Self {
+    pub fn new(api_key: Option<String>, db: Connection) -> Self {
         let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        let global_rules = db::get_setting(&db, "global_rules")
+            .ok()
+            .flatten()
+            .unwrap_or_default();
         Self {
             client: OpenRouterClient::new(api_key),
             sessions: AsyncMutex::new(HashMap::new()),
             workspace: Mutex::new(workspace),
-            global_rules: Mutex::new(String::new()),
+            global_rules: Mutex::new(global_rules),
             cancelled: AtomicBool::new(false),
+            db: Mutex::new(db),
         }
     }
 }
@@ -115,4 +123,23 @@ pub fn get_workspace(state: State<'_, AppState>) -> String {
         .lock()
         .map(|w| w.display().to_string().replace('\\', "/"))
         .unwrap_or_default()
+}
+
+#[tauri::command]
+pub fn get_global_rules(state: State<'_, AppState>) -> Result<String, String> {
+    state
+        .global_rules
+        .lock()
+        .map(|r| r.clone())
+        .map_err(lock_err)
+}
+
+#[tauri::command]
+pub fn set_global_rules(state: State<'_, AppState>, rules: String) -> Result<(), String> {
+    {
+        let mut g = state.global_rules.lock().map_err(lock_err)?;
+        *g = rules.clone();
+    }
+    let db = state.db.lock().map_err(lock_err)?;
+    db::set_setting(&db, "global_rules", &rules).map_err(|e| e.to_string())
 }

@@ -5,8 +5,10 @@ pub mod db;
 pub mod tools;
 
 use commands::{
-    get_workspace, remove_session, send_message, set_workspace, stop_message, AppState,
+    get_global_rules, get_workspace, remove_session, send_message, set_global_rules,
+    set_workspace, stop_message, AppState,
 };
+use tauri::Manager;
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -21,14 +23,22 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
-        .manage(AppState::new(api_key))
+        .setup(move |app| {
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let db = db::open(&dir.join("aura.db"))?;
+            app.manage(AppState::new(api_key, db));
+            Ok(())
+        })
         .invoke_handler(tauri::generate_handler![
             greet,
             send_message,
             stop_message,
             remove_session,
             set_workspace,
-            get_workspace
+            get_workspace,
+            get_global_rules,
+            set_global_rules
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

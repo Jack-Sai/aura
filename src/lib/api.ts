@@ -19,3 +19,11 @@ export function setWorkspace(path: string): Promise<string> {
 export function getWorkspace(): Promise<string> {
   return invoke("get_workspace");
 }
+
+export function getGlobalRules(): Promise<string> {
+  return invoke("get_global_rules");
+}
+
+export function setGlobalRules(rules: string): Promise<void> {
+  return invoke("set_global_rules", { rules });
+}
