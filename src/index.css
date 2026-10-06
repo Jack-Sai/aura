@@ -142,6 +142,35 @@
 }
 
 /* ---------------------------------------------------------------
+   Breathing cursor (first-token wait)
+   --------------------------------------------------------------- */
+
+@layer components {
+  .aura-breathing-cursor {
+    display: inline-block;
+    width: 8px;
+    height: 1.05em;
+    vertical-align: text-bottom;
+    background-color: var(--color-brand);
+    border-radius: 2px;
+    transform-origin: center;
+    animation: aura-breathe 1.6s ease-in-out infinite;
+  }
+
+  @keyframes aura-breathe {
+    0%,
+    100% {
+      opacity: 1;
+      transform: scaleY(1);
+    }
+    50% {
+      opacity: 0.25;
+      transform: scaleY(0.7);
+    }
+  }
+}
+
+/* ---------------------------------------------------------------
    Markdown (.md)
    --------------------------------------------------------------- */
 

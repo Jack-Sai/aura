@@ -172,7 +172,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         { kind: "error", text: p.text ?? "" },
       ]);
     });
-    on("agent:done", () => {});
+    on("agent:done", (p) => {
+      const stream = streamRef.current;
+      if (!stream || stream.sessionId !== p.session_id) return;
+      appendBlocks(stream.sessionId, stream.messageId, (b) =>
+        b.length === 0 ? [{ kind: "text", text: "" }] : b,
+      );
+    });
 
     return () => {
       disposed = true;

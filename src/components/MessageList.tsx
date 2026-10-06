@@ -26,6 +26,13 @@ function renderBlock(block: Block, i: number) {
 }
 
 function AssistantMessage({ blocks }: { blocks: Block[] }) {
+  if (blocks.length === 0) {
+    return (
+      <div className="min-h-[1.6em] leading-relaxed">
+        <span className="aura-breathing-cursor" aria-hidden="true" />
+      </div>
+    );
+  }
   return <div className="flex flex-col gap-3">{blocks.map(renderBlock)}</div>;
 }
 
