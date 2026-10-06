@@ -3,6 +3,7 @@ import InputArea from "./components/InputArea";
 import MessageList from "./components/MessageList";
 import SettingsModal from "./components/SettingsModal";
 import Sidebar from "./components/Sidebar";
+import TitleBar from "./components/TitleBar";
 import { useTheme, type Theme } from "./hooks/useTheme";
 import { StoreProvider, useStore } from "./store";
 
@@ -21,21 +22,25 @@ function Shell({ theme, onToggleTheme }: { theme: Theme; onToggleTheme: () => vo
   }, [activeSession?.messages]);
 
   return (
-    <div className="flex h-screen overflow-hidden bg-surface text-foreground">
-      <Sidebar
-        theme={theme}
-        onToggleTheme={onToggleTheme}
-        onOpenSettings={() => setSettingsOpen(true)}
-      />
+    <div className="flex h-screen flex-col overflow-hidden bg-surface text-foreground">
+      <TitleBar />
 
-      <main className="flex min-w-0 flex-1 flex-col">
-        <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
-          <MessageList />
-        </div>
-        <InputArea busy={busy} onSend={sendMessage} onStop={stop} />
-      </main>
+      <div className="flex min-h-0 flex-1">
+        <Sidebar
+          theme={theme}
+          onToggleTheme={onToggleTheme}
+          onOpenSettings={() => setSettingsOpen(true)}
+        />
 
-      {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+        <main className="flex min-w-0 flex-1 flex-col">
+          <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
+            <MessageList />
+          </div>
+          <InputArea busy={busy} onSend={sendMessage} onStop={stop} />
+        </main>
+
+        {settingsOpen && <SettingsModal onClose={() => setSettingsOpen(false)} />}
+      </div>
     </div>
   );
 }

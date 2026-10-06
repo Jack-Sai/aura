@@ -26,6 +26,7 @@ dist-ssr
 # Dev docs
 DESIGN.md
 DEV.md
+Pinguo Design System.md
 
 # Agents
 .opencode/*
