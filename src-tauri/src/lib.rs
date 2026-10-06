@@ -4,7 +4,9 @@ pub mod commands;
 pub mod db;
 pub mod tools;
 
-use commands::{get_workspace, remove_session, send_message, set_workspace, AppState};
+use commands::{
+    get_workspace, remove_session, send_message, set_workspace, stop_message, AppState,
+};
 
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
 #[tauri::command]
@@ -23,6 +25,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             greet,
             send_message,
+            stop_message,
             remove_session,
             set_workspace,
             get_workspace

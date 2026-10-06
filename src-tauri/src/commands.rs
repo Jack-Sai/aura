@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Mutex;
 
 use serde_json::Value;
@@ -28,6 +29,7 @@ pub struct AppState {
     pub sessions: AsyncMutex<HashMap<String, Session>>,
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
+    pub cancelled: AtomicBool,
 }
 
 impl AppState {
@@ -38,6 +40,7 @@ impl AppState {
             sessions: AsyncMutex::new(HashMap::new()),
             workspace: Mutex::new(workspace),
             global_rules: Mutex::new(String::new()),
+            cancelled: AtomicBool::new(false),
         }
     }
 }
@@ -60,11 +63,14 @@ pub async fn send_message(
     if !state.client.has_api_key() {
         return Err("未配置 OPENROUTER_API_KEY 环境变量".into());
     }
+    state.cancelled.store(false, Ordering::Relaxed);
     let workspace = state.workspace.lock().map_err(lock_err)?.clone();
     let global_rules = state.global_rules.lock().map_err(lock_err)?.clone();
 
     let mut sessions = state.sessions.lock().await;
-    let session = sessions.entry(session_id).or_insert_with(Session::new);
+    let session = sessions
+        .entry(session_id.clone())
+        .or_insert_with(Session::new);
     let session = &mut *session;
     let mut ctx = TurnContext {
         app: &app,
@@ -73,8 +79,15 @@ pub async fn send_message(
         global_rules: &global_rules,
         history: &mut session.history,
         model_idx: &mut session.model_idx,
+        session_id: &session_id,
+        cancelled: &state.cancelled,
     };
     run_turn(&mut ctx, message).await
+}
+
+#[tauri::command]
+pub fn stop_message(state: State<'_, AppState>) {
+    state.cancelled.store(true, Ordering::Relaxed);
 }
 
 #[tauri::command]

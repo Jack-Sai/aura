@@ -1,4 +1,6 @@
 use std::path::Path;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::Duration;
 
 use futures_util::StreamExt;
 use serde_json::{json, Value};
@@ -26,6 +28,8 @@ pub struct TurnContext<'a> {
     pub global_rules: &'a str,
     pub history: &'a mut Vec<Value>,
     pub model_idx: &'a mut usize,
+    pub session_id: &'a str,
+    pub cancelled: &'a AtomicBool,
 }
 
 enum Next {
@@ -33,8 +37,17 @@ enum Next {
     Reject(String),
 }
 
-fn emit_text(app: &AppHandle, event: &str, text: &str) {
-    let _ = app.emit(event, json!({ "text": text }));
+fn emit_text(app: &AppHandle, session_id: &str, event: &str, text: &str) {
+    let _ = app.emit(event, json!({ "session_id": session_id, "text": text }));
+}
+
+fn emit_done(app: &AppHandle, session_id: &str) {
+    let _ = app.emit(EV_DONE, json!({ "session_id": session_id }));
+}
+
+fn emit_cancelled(app: &AppHandle, session_id: &str) {
+    emit_text(app, session_id, EV_NOTICE, "已停止生成");
+    emit_done(app, session_id);
 }
 
 fn push_assistant(history: &mut Vec<Value>, content: &str) {
@@ -67,10 +80,15 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
     let mut rounds = 0usize;
 
     loop {
+        if ctx.cancelled.load(Ordering::Relaxed) {
+            emit_cancelled(ctx.app, ctx.session_id);
+            return Ok(());
+        }
         rounds += 1;
         if rounds > MAX_TOOL_ROUNDS {
             emit_text(
                 ctx.app,
+                ctx.session_id,
                 EV_ERROR,
                 "已达到最大工具轮次，请基于已有信息直接回答。",
             );
@@ -93,12 +111,12 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let fb = match ctx.client.stream_with_fallback(*ctx.model_idx, &messages).await {
             Ok(fb) => fb,
             Err(e) => {
-                emit_text(ctx.app, EV_ERROR, &format!("请求失败：{}", e));
+                emit_text(ctx.app, ctx.session_id, EV_ERROR, &format!("请求失败：{}", e));
                 return Err(format!("api error: {}", e));
             }
         };
         if let Some(notice) = fb.notice {
-            emit_text(ctx.app, EV_NOTICE, &notice);
+            emit_text(ctx.app, ctx.session_id, EV_NOTICE, &notice);
         }
         *ctx.model_idx = fb.model_idx;
 
@@ -109,16 +127,29 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let mut stream_err: Option<String> = None;
 
         let mut stream = fb.value;
-        'stream: while let Some(item) = stream.next().await {
+        let mut was_cancelled = false;
+        'stream: loop {
+            let cancel = ctx.cancelled;
+            let item = tokio::select! {
+                i = stream.next() => i,
+                _ = async {
+                    while !cancel.load(Ordering::Relaxed) {
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                } => {
+                    was_cancelled = true;
+                    break 'stream;
+                }
+            };
             match item {
-                Ok(text) => {
+                Some(Ok(text)) => {
                     let mut events = Vec::new();
                     parser.feed(&text, &mut events);
                     for ev in events {
                         match ev {
                             Event::Chunk(t) => {
                                 turn_output.push_str(&t);
-                                emit_text(ctx.app, EV_CHUNK, &t);
+                                emit_text(ctx.app, ctx.session_id, EV_CHUNK, &t);
                             }
                             Event::Tool(json_str) => {
                                 turn_output
@@ -134,22 +165,29 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                         }
                     }
                 }
-                Err(e) => {
+                Some(Err(e)) => {
                     stream_err = Some(e.to_string());
                     break;
                 }
+                None => break,
             }
+        }
+
+        if was_cancelled {
+            push_assistant(ctx.history, &turn_output);
+            emit_cancelled(ctx.app, ctx.session_id);
+            return Ok(());
         }
 
         if let Some(msg) = stream_err {
             push_assistant(ctx.history, &turn_output);
-            emit_text(ctx.app, EV_ERROR, &format!("连接中断：{}", msg));
+            emit_text(ctx.app, ctx.session_id, EV_ERROR, &format!("连接中断：{}", msg));
             return Err(msg);
         }
 
         if answered {
             push_assistant(ctx.history, &turn_output);
-            let _ = ctx.app.emit(EV_DONE, json!({}));
+            emit_done(ctx.app, ctx.session_id);
             return Ok(());
         }
 
@@ -160,7 +198,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 match ev {
                     Event::Chunk(t) => {
                         turn_output.push_str(&t);
-                        emit_text(ctx.app, EV_CHUNK, &t);
+                        emit_text(ctx.app, ctx.session_id, EV_CHUNK, &t);
                     }
                     Event::Tool(json_str) => {
                         turn_output.push_str(&format!("<tool>{}</tool>", json_str));
@@ -174,14 +212,14 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             }
             if answered {
                 push_assistant(ctx.history, &turn_output);
-                let _ = ctx.app.emit(EV_DONE, json!({}));
+                emit_done(ctx.app, ctx.session_id);
                 return Ok(());
             }
             if tool_json.is_none() {
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
-                    emit_text(ctx.app, EV_ERROR, "模型解析失败，请重试。");
+                    emit_text(ctx.app, ctx.session_id, EV_ERROR, "模型解析失败，请重试。");
                     return Err("model output parse failed".into());
                 }
                 let msg = match finish {
@@ -213,7 +251,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
-                    emit_text(ctx.app, EV_ERROR, "模型解析失败，请重试。");
+                    emit_text(ctx.app, ctx.session_id, EV_ERROR, "模型解析失败，请重试。");
                     return Err("model output parse failed".into());
                 }
                 ctx.history.push(json!({
@@ -240,11 +278,11 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 } else {
                     match tools::execute(ctx.workspace, &name, &args) {
                         Ok(out) => {
-                            emit_text(ctx.app, EV_ACTION, &out.label);
+                            emit_text(ctx.app, ctx.session_id, EV_ACTION, &out.label);
                             out.result
                         }
                         Err(fail) => {
-                            emit_text(ctx.app, EV_ACTION, &fail.label);
+                            emit_text(ctx.app, ctx.session_id, EV_ACTION, &fail.label);
                             format!("Error: {}", fail.error)
                         }
                     }
