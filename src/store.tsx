@@ -15,6 +15,7 @@ import {
   getWorkspace,
   loadSessions,
   removeSession,
+  removeWorkspace as removeWorkspaceApi,
   saveSession,
   sendMessage as sendMessageApi,
   setSelectedModel as setSelectedModelApi,
@@ -53,6 +54,10 @@ interface State {
 
 interface StoreValue extends State {
   activeSession: Session | undefined;
+  renamingId: string | null;
+  startRename: (id: string) => void;
+  cancelRename: () => void;
+  renameSession: (id: string, title: string) => void;
   sendMessage: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
@@ -60,6 +65,7 @@ interface StoreValue extends State {
   selectSession: (id: string) => void;
   openSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => void;
+  removeWorkspace: (path: string) => Promise<void>;
   setModel: (id: string) => Promise<void>;
 }
 
@@ -106,6 +112,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const stateRef = useRef(state);
   stateRef.current = state;
 
+  const [renamingId, setRenamingId] = useState<string | null>(null);
+
+  const startRename = useCallback((id: string) => setRenamingId(id), []);
+  const cancelRename = useCallback(() => setRenamingId(null), []);
+
   const bufferRef = useRef("");
   const streamRef = useRef<StreamTarget | null>(null);
   const sawErrorRef = useRef(false);
@@ -115,6 +126,21 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       saveSession(id, title, workspace, messages).catch(() => {});
     },
     [],
+  );
+
+  const renameSession = useCallback(
+    (id: string, title: string) => {
+      const t = title.trim();
+      if (!t) return;
+      const sess = stateRef.current.sessions.find((x) => x.id === id);
+      if (!sess) return;
+      setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((x) => (x.id === id ? { ...x, title: t } : x)),
+      }));
+      persistNow(id, t, sess.workspace, sess.messages);
+    },
+    [persistNow],
   );
 
   const appendBlocks = useCallback(
@@ -426,10 +452,26 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const removeWorkspace = useCallback(async (path: string) => {
+    const s0 = stateRef.current;
+    if (path === s0.workspace) return;
+    const ids = s0.sessions.filter((x) => x.workspace === path).map((x) => x.id);
+    removeWorkspaceApi(path, ids).catch(() => {});
+    setState((s) => ({
+      ...s,
+      workspaces: s.workspaces.filter((w) => w !== path),
+      sessions: s.sessions.filter((x) => x.workspace !== path),
+    }));
+  }, []);
+
   const value = useMemo<StoreValue>(
     () => ({
       ...state,
       activeSession: state.sessions.find((x) => x.id === state.activeId),
+      renamingId,
+      startRename,
+      cancelRename,
+      renameSession,
       sendMessage,
       stop,
       switchWorkspace,
@@ -437,10 +479,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       selectSession,
       openSession,
       deleteSession,
+      removeWorkspace,
       setModel,
     }),
     [
       state,
+      renamingId,
+      startRename,
+      cancelRename,
+      renameSession,
       sendMessage,
       stop,
       switchWorkspace,
@@ -448,6 +495,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       selectSession,
       openSession,
       deleteSession,
+      removeWorkspace,
       setModel,
     ],
   );

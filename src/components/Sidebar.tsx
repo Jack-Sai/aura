@@ -23,6 +23,9 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
     newSession,
     openSession,
     deleteSession,
+    renamingId,
+    cancelRename,
+    renameSession,
   } = useStore();
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -83,6 +86,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
           return (
             <section key={w} className="mb-0.5">
               <div
+                data-ctx-workspace={w}
                 className={`group flex items-center rounded-tag transition-colors ${
                   isCurrent ? "bg-bubble" : "hover:bg-bubble"
                 }`}
@@ -132,27 +136,51 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                   {wsSessions.map((s) => (
                     <li key={s.id}>
                       <div
+                        data-ctx-session={s.id}
                         className={`group flex items-center rounded-tag transition-colors ${
                           s.id === activeId
                             ? "bg-bubble"
                             : "hover:bg-bubble"
                         }`}
                       >
-                        <button
-                          type="button"
-                          onClick={() => openSession(s.id)}
-                          className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
-                        >
-                          {s.title}
-                        </button>
-                        <button
-                          type="button"
-                          onClick={() => deleteSession(s.id)}
-                          aria-label="删除对话"
-                          className="mr-1 rounded p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
-                        >
-                          <Trash2 size={13} />
-                        </button>
+                        {renamingId === s.id ? (
+                          <input
+                            autoFocus
+                            defaultValue={s.title}
+                            onFocus={(e) => e.target.select()}
+                            onKeyDown={(e) => {
+                              if (e.key === "Enter") {
+                                renameSession(s.id, e.currentTarget.value);
+                                cancelRename();
+                              } else if (e.key === "Escape") {
+                                cancelRename();
+                              }
+                            }}
+                            onBlur={(e) => {
+                              renameSession(s.id, e.currentTarget.value);
+                              cancelRename();
+                            }}
+                            className="min-w-0 flex-1 rounded border border-brand bg-surface px-2 py-1 text-sm text-foreground outline-none"
+                          />
+                        ) : (
+                          <button
+                            type="button"
+                            onClick={() => openSession(s.id)}
+                            className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
+                          >
+                            {s.title}
+                          </button>
+                        )}
+                        {renamingId !== s.id && (
+                          <button
+                            type="button"
+                            onClick={() => deleteSession(s.id)}
+                            aria-label="删除对话"
+                            className="mr-1 rounded p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                          >
+                            <Trash2 size={13} />
+                          </button>
+                        )}
                       </div>
                     </li>
                   ))}

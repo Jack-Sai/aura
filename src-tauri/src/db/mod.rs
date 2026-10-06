@@ -167,6 +167,15 @@ pub fn delete_session(conn: &Connection, id: &str) -> Result<(), rusqlite::Error
     Ok(())
 }
 
+pub fn delete_workspace(conn: &Connection, workspace: &str) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM messages WHERE session_id IN (SELECT id FROM sessions WHERE workspace = ?1)",
+        params![workspace],
+    )?;
+    conn.execute("DELETE FROM sessions WHERE workspace = ?1", params![workspace])?;
+    Ok(())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

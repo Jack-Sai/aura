@@ -79,3 +79,7 @@ export function getApiConfig(): Promise<ApiConfig> {
 export function setApiConfig(provider: string, apiKey: string): Promise<void> {
   return invoke("set_api_config", { provider, apiKey });
 }
+
+export function removeWorkspace(path: string, sessionIds: string[]): Promise<void> {
+  return invoke("remove_workspace", { path, sessionIds });
+}

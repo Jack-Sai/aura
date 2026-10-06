@@ -289,3 +289,19 @@ pub fn set_api_config(
     let db = state.db.lock().map_err(lock_err)?;
     db::set_setting(&db, "openrouter_api_key", &key).map_err(|e| e.to_string())
 }
+
+#[tauri::command]
+pub async fn remove_workspace(
+    state: State<'_, AppState>,
+    path: String,
+    session_ids: Vec<String>,
+) -> Result<(), String> {
+    {
+        let mut sessions = state.sessions.lock().await;
+        for id in &session_ids {
+            sessions.remove(id);
+        }
+    }
+    let db = state.db.lock().map_err(lock_err)?;
+    db::delete_workspace(&db, &path).map_err(|e| e.to_string())
+}
