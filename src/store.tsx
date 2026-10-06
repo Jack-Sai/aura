@@ -10,13 +10,17 @@ import {
   type ReactNode,
 } from "react";
 import {
+  getModels,
+  getSelectedModel,
   getWorkspace,
   loadSessions,
   removeSession,
   saveSession,
   sendMessage as sendMessageApi,
+  setSelectedModel as setSelectedModelApi,
   setWorkspace,
   stopMessage as stopMessageApi,
+  type ModelInfo,
 } from "./lib/api";
 
 export type BlockKind = "text" | "action" | "notice" | "error";
@@ -43,6 +47,8 @@ interface State {
   sessions: Session[];
   activeId: string;
   busy: boolean;
+  models: ModelInfo[];
+  selectedModel: string;
 }
 
 interface StoreValue extends State {
@@ -54,6 +60,7 @@ interface StoreValue extends State {
   selectSession: (id: string) => void;
   openSession: (id: string) => Promise<void>;
   deleteSession: (id: string) => void;
+  setModel: (id: string) => Promise<void>;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -92,6 +99,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     sessions: [],
     activeId: "",
     busy: false,
+    models: [],
+    selectedModel: "",
   });
 
   const stateRef = useRef(state);
@@ -225,8 +234,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [appendBlocks]);
 
   useEffect(() => {
-    Promise.all([getWorkspace(), loadSessions()])
-      .then(([ws, saved]) => {
+    Promise.all([getWorkspace(), loadSessions(), getModels(), getSelectedModel()])
+      .then(([ws, saved, models, selectedModel]) => {
         setState((s) => {
           const restored: Session[] = saved.map((x) => ({
             id: x.id,
@@ -246,10 +255,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             sessions = [...sessions, ns];
             activeId = ns.id;
           }
-          return { ...s, workspaces, workspace: ws, sessions, activeId };
+          return {
+            ...s,
+            workspaces,
+            workspace: ws,
+            sessions,
+            activeId,
+            models,
+            selectedModel,
+          };
         });
       })
       .catch(() => {});
+  }, []);
+
+  const setModel = useCallback(async (id: string) => {
+    try {
+      await setSelectedModelApi(id);
+      setState((s) => ({ ...s, selectedModel: id }));
+    } catch {
+      /* 无效模型保持原选择 */
+    }
   }, []);
 
   const sendMessage = useCallback(
@@ -411,6 +437,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       selectSession,
       openSession,
       deleteSession,
+      setModel,
     }),
     [
       state,
@@ -421,6 +448,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       selectSession,
       openSession,
       deleteSession,
+      setModel,
     ],
   );
 

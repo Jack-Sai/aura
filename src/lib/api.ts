@@ -8,6 +8,12 @@ export interface SavedSession {
   messages: ChatMessage[];
 }
 
+export interface ModelInfo {
+  id: string;
+  label: string;
+  context_limit: number;
+}
+
 export function sendMessage(sessionId: string, message: string): Promise<void> {
   return invoke("send_message", { sessionId, message });
 }
@@ -47,4 +53,16 @@ export function getGlobalRules(): Promise<string> {
 
 export function setGlobalRules(rules: string): Promise<void> {
   return invoke("set_global_rules", { rules });
+}
+
+export function getModels(): Promise<ModelInfo[]> {
+  return invoke("get_models");
+}
+
+export function getSelectedModel(): Promise<string> {
+  return invoke("get_selected_model");
+}
+
+export function setSelectedModel(id: string): Promise<void> {
+  return invoke("set_selected_model", { id });
 }

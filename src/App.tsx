@@ -8,7 +8,8 @@ import SettingsPage from "./pages/SettingsPage";
 import { StoreProvider, useStore } from "./store";
 
 function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
-  const { busy, sendMessage, stop, activeSession } = useStore();
+  const { busy, sendMessage, stop, activeSession, models, selectedModel, setModel } =
+    useStore();
   const [view, setView] = useState<"chat" | "settings">("chat");
   const scrollRef = useRef<HTMLDivElement>(null);
 
@@ -46,7 +47,14 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
               <div ref={scrollRef} className="min-h-0 flex-1 overflow-y-auto">
                 <MessageList />
               </div>
-              <InputArea busy={busy} onSend={sendMessage} onStop={stop} />
+              <InputArea
+                busy={busy}
+                onSend={sendMessage}
+                onStop={stop}
+                models={models}
+                selectedModel={selectedModel}
+                onModelChange={setModel}
+              />
             </>
           )}
         </main>

@@ -9,7 +9,7 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::runner::{run_turn, TurnContext};
-use crate::api::OpenRouterClient;
+use crate::api::{OpenRouterClient, MODELS};
 use crate::db;
 
 pub struct Session {
@@ -18,10 +18,10 @@ pub struct Session {
 }
 
 impl Session {
-    fn new() -> Self {
+    fn new(model_idx: usize) -> Self {
         Self {
             history: Vec::new(),
-            model_idx: 0,
+            model_idx,
         }
     }
 }
@@ -33,6 +33,7 @@ pub struct AppState {
     pub global_rules: Mutex<String>,
     pub cancelled: AtomicBool,
     pub db: Mutex<Connection>,
+    pub selected_model: Mutex<usize>,
 }
 
 impl AppState {
@@ -42,6 +43,11 @@ impl AppState {
             .ok()
             .flatten()
             .unwrap_or_default();
+        let selected_model = db::get_setting(&db, "model_id")
+            .ok()
+            .flatten()
+            .and_then(|id| MODELS.iter().position(|m| m.id == id))
+            .unwrap_or(0);
         Self {
             client: OpenRouterClient::new(api_key),
             sessions: AsyncMutex::new(HashMap::new()),
@@ -49,6 +55,7 @@ impl AppState {
             global_rules: Mutex::new(global_rules),
             cancelled: AtomicBool::new(false),
             db: Mutex::new(db),
+            selected_model: Mutex::new(selected_model),
         }
     }
 }
@@ -77,6 +84,7 @@ pub async fn send_message(
 
     let mut sessions = state.sessions.lock().await;
     let session_id_for_load = session_id.clone();
+    let default_model = state.selected_model.lock().map(|m| *m).unwrap_or(0);
     let session = sessions.entry(session_id.clone()).or_insert_with(|| {
         state
             .db
@@ -85,7 +93,7 @@ pub async fn send_message(
             .and_then(|db| db::load_history(&db, &session_id_for_load).ok())
             .flatten()
             .map(|(history, model_idx)| Session { history, model_idx })
-            .unwrap_or_else(Session::new)
+            .unwrap_or_else(|| Session::new(default_model))
     });
     let session = &mut *session;
     let result = {
@@ -192,4 +200,50 @@ pub fn set_global_rules(state: State<'_, AppState>, rules: String) -> Result<(),
     }
     let db = state.db.lock().map_err(lock_err)?;
     db::set_setting(&db, "global_rules", &rules).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct ModelInfo {
+    pub id: String,
+    pub label: String,
+    pub context_limit: usize,
+}
+
+#[tauri::command]
+pub fn get_models() -> Vec<ModelInfo> {
+    MODELS
+        .iter()
+        .map(|m| ModelInfo {
+            id: m.id.to_string(),
+            label: m.label.to_string(),
+            context_limit: m.context_limit,
+        })
+        .collect()
+}
+
+#[tauri::command]
+pub fn get_selected_model(state: State<'_, AppState>) -> String {
+    let idx = state
+        .selected_model
+        .lock()
+        .map(|m| *m)
+        .unwrap_or(0)
+        .min(MODELS.len() - 1);
+    MODELS[idx].id.to_string()
+}
+
+#[tauri::command]
+pub fn set_selected_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
+    let pos = MODELS
+        .iter()
+        .position(|m| m.id == id)
+        .ok_or_else(|| "未知模型".to_string())?;
+    *state.selected_model.lock().map_err(lock_err)? = pos;
+    if let Ok(mut sessions) = state.sessions.try_lock() {
+        for session in sessions.values_mut() {
+            session.model_idx = pos;
+        }
+    }
+    let db = state.db.lock().map_err(lock_err)?;
+    db::set_setting(&db, "model_id", &id).map_err(|e| e.to_string())
 }
