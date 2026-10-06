@@ -66,18 +66,18 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
         <button
           type="button"
           onClick={onClose}
-          className="flex items-center gap-1.5 text-sm text-subtle transition-colors hover:text-foreground"
+          className="flex items-center gap-2 text-sm text-subtle transition-colors hover:text-foreground"
         >
           <ArrowLeft size={15} />
           返回对话
         </button>
 
-        <h1 className="mt-5 text-2xl font-semibold tracking-[-0.03em]">
+        <h1 className="mt-5 text-2xl font-semibold leading-tight tracking-[-0.03em]">
           设置
         </h1>
 
         <section className="mt-6 rounded-card border border-line p-6">
-          <h2 className="text-sm font-semibold">外观</h2>
+          <h2 className="eyebrow">外观</h2>
           <div className="mt-4 flex items-center justify-between">
             <span className="text-sm font-medium">主题</span>
             <div className="flex rounded-full border border-line p-0.5">
@@ -108,7 +108,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
         </section>
 
         <section className="mt-6 rounded-card border border-line p-6">
-          <h2 className="text-sm font-semibold">模型服务</h2>
+          <h2 className="eyebrow">模型服务</h2>
           <div className="mt-4 flex items-center justify-between">
             <span className="text-sm font-medium">提供商</span>
             <div className="relative">
@@ -142,7 +142,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                 if (e.key === "Enter") saveApiKey();
               }}
               placeholder="sk-or-…"
-              className="w-full rounded-card border border-line bg-surface px-3 py-2.5 pr-10 text-sm outline-none transition-colors placeholder:text-subtle focus:border-brand"
+              className="w-full rounded-lg border border-line bg-surface px-3 py-3 pr-10 text-sm outline-none transition-colors placeholder:text-subtle focus:border-brand"
             />
             <button
               type="button"
@@ -165,7 +165,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
         </section>
 
         <section className="mt-6 rounded-card border border-line p-6">
-          <h2 className="text-sm font-semibold">通用</h2>
+          <h2 className="eyebrow">通用</h2>
           <label
             htmlFor="global-rules"
             className="mt-4 block text-sm font-medium"
@@ -182,7 +182,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
             onKeyDown={handleKeyDown}
             rows={6}
             placeholder="使用中文回复；代码及时提交…"
-            className="mt-2 w-full resize-y rounded-card border border-line bg-surface px-3 py-2.5 text-sm leading-relaxed outline-none transition-colors placeholder:text-subtle focus:border-brand"
+            className="mt-2 w-full resize-y rounded-lg border border-line bg-surface px-3 py-3 text-sm leading-relaxed outline-none transition-colors placeholder:text-subtle focus:border-brand"
           />
           <div className="mt-4 flex justify-end">
             <button

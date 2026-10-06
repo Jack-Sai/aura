@@ -47,7 +47,7 @@ export default function InputArea({
 
   return (
     <div className="px-6 pb-5 pt-3">
-      <div className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-card border border-line bg-surface px-4 py-3 transition-colors focus-within:border-brand">
+      <div className="mx-auto flex w-full max-w-3xl items-end gap-2 rounded-card border border-line bg-surface px-4 py-3 shadow-xs transition-colors focus-within:border-brand focus-within:shadow-sm">
         <textarea
           ref={textareaRef}
           rows={1}
