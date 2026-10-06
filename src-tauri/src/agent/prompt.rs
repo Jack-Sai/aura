@@ -26,7 +26,9 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
          - 可以先输出普通文本作为思考过程，无需任何标签。\n\
          - 一次只调用一个工具；收到工具结果后继续思考或作答。\n\
          - 任务完成后输出 <answer>最终答案</answer>。一旦输出 <answer>，任务即结束；\
-         答案应完整、可直接使用，并用 Markdown 排版。\n",
+         答案应完整、可直接使用，并用 Markdown 排版。\n\
+         - 即使没有调用任何工具，最终回答也必须用 <answer></answer> 包裹，\
+         禁止直接输出裸文本作为回答。\n",
     );
 
     p.push_str(

@@ -216,6 +216,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 return Ok(());
             }
             if tool_json.is_none() {
+                // 模型未输出 <answer> 标签，但流正常结束且已有正文：
+                // 视为模型直接作答，宽容接受，不再强制协议标签。
+                if !turn_output.is_empty() {
+                    push_assistant(ctx.history, &turn_output);
+                    emit_done(ctx.app, ctx.session_id);
+                    return Ok(());
+                }
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
                 if parse_failures > MAX_PARSE_RETRIES {
