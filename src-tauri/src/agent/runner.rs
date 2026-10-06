@@ -277,12 +277,6 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     emit_done(ctx.app, ctx.session_id);
                     return Ok(());
                 }
-                emit_text(
-                    ctx.app,
-                    ctx.session_id,
-                    EV_NOTICE,
-                    "模型本轮未输出内容，正在重试",
-                );
                 {
                     let (count, tail) = stream.diag();
                     write_diag_log(&format!(
