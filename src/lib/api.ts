@@ -4,6 +4,10 @@ export function sendMessage(sessionId: string, message: string): Promise<void> {
   return invoke("send_message", { sessionId, message });
 }
 
+export function stopMessage(): Promise<void> {
+  return invoke("stop_message");
+}
+
 export function removeSession(sessionId: string): Promise<void> {
   return invoke("remove_session", { sessionId });
 }

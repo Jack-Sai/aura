@@ -1,13 +1,21 @@
+import { listen } from "@tauri-apps/api/event";
 import {
   createContext,
   useCallback,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
   type ReactNode,
 } from "react";
-import { getWorkspace, removeSession, setWorkspace } from "./lib/api";
+import {
+  getWorkspace,
+  removeSession,
+  sendMessage as sendMessageApi,
+  setWorkspace,
+  stopMessage as stopMessageApi,
+} from "./lib/api";
 
 export type BlockKind = "text" | "action" | "notice" | "error";
 
@@ -17,8 +25,8 @@ export interface Block {
 }
 
 export type ChatMessage =
-  | { role: "user"; content: string }
-  | { role: "assistant"; blocks: Block[] };
+  | { id: string; role: "user"; content: string }
+  | { id: string; role: "assistant"; blocks: Block[] };
 
 export interface Session {
   id: string;
@@ -32,10 +40,13 @@ interface State {
   workspace: string;
   sessions: Session[];
   activeId: string;
+  busy: boolean;
 }
 
 interface StoreValue extends State {
   activeSession: Session | undefined;
+  sendMessage: (text: string) => Promise<void>;
+  stop: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
   newSession: () => void;
   selectSession: (id: string) => void;
@@ -43,6 +54,11 @@ interface StoreValue extends State {
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
+
+interface StreamTarget {
+  sessionId: string;
+  messageId: string;
+}
 
 function createSession(workspace: string): Session {
   return {
@@ -53,13 +69,134 @@ function createSession(workspace: string): Session {
   };
 }
 
+function deriveTitle(text: string): string {
+  const t = text.trim();
+  return t.length > 20 ? `${t.slice(0, 20)}…` : t;
+}
+
+function mergeText(blocks: Block[], text: string): Block[] {
+  const last = blocks[blocks.length - 1];
+  if (last && last.kind === "text") {
+    return [...blocks.slice(0, -1), { kind: "text", text: last.text + text }];
+  }
+  return [...blocks, { kind: "text", text }];
+}
+
 export function StoreProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<State>({
     workspaces: [],
     workspace: "",
     sessions: [],
     activeId: "",
+    busy: false,
   });
+
+  const bufferRef = useRef("");
+  const streamRef = useRef<StreamTarget | null>(null);
+  const sawErrorRef = useRef(false);
+
+  const appendBlocks = useCallback(
+    (sessionId: string, messageId: string, updater: (blocks: Block[]) => Block[]) => {
+      setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((sess) => {
+          if (sess.id !== sessionId) return sess;
+          return {
+            ...sess,
+            messages: sess.messages.map((m) =>
+              m.id === messageId && m.role === "assistant"
+                ? { ...m, blocks: updater(m.blocks) }
+                : m,
+            ),
+          };
+        }),
+      }));
+    },
+    [],
+  );
+
+  useEffect(() => {
+    let disposed = false;
+    const unsubs: Array<() => void> = [];
+
+    const on = async (
+      name: string,
+      cb: (payload: { session_id: string; text?: string }) => void,
+    ) => {
+      const un = await listen<{ session_id: string; text?: string }>(name, (e) =>
+        cb(e.payload),
+      );
+      if (disposed) un();
+      else unsubs.push(un);
+    };
+
+    on("agent:chunk", (p) => {
+      const stream = streamRef.current;
+      if (!stream || stream.sessionId !== p.session_id) return;
+      bufferRef.current += p.text ?? "";
+    });
+    on("agent:action", (p) => {
+      const stream = streamRef.current;
+      if (!stream || stream.sessionId !== p.session_id) return;
+      appendBlocks(stream.sessionId, stream.messageId, (b) => [
+        ...b,
+        { kind: "action", text: p.text ?? "" },
+      ]);
+    });
+    on("agent:notice", (p) => {
+      const stream = streamRef.current;
+      if (!stream || stream.sessionId !== p.session_id) return;
+      appendBlocks(stream.sessionId, stream.messageId, (b) => [
+        ...b,
+        { kind: "notice", text: p.text ?? "" },
+      ]);
+    });
+    on("agent:error", (p) => {
+      const stream = streamRef.current;
+      if (!stream || stream.sessionId !== p.session_id) return;
+      sawErrorRef.current = true;
+      appendBlocks(stream.sessionId, stream.messageId, (b) => [
+        ...b,
+        { kind: "error", text: p.text ?? "" },
+      ]);
+    });
+    on("agent:done", () => {});
+
+    return () => {
+      disposed = true;
+      unsubs.forEach((u) => u());
+    };
+  }, [appendBlocks]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => {
+      const buf = bufferRef.current;
+      const stream = streamRef.current;
+      if (!buf || !stream) return;
+      const chars = Array.from(buf);
+      const n = Math.min(
+        chars.length,
+        chars.length > 90 ? 6 : chars.length > 30 ? 3 : 1,
+      );
+      const take = chars.slice(0, n).join("");
+      bufferRef.current = chars.slice(n).join("");
+      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, take));
+    }, 30);
+    return () => window.clearInterval(timer);
+  }, [appendBlocks]);
+
+  const drainBuffer = useCallback(async () => {
+    const start = Date.now();
+    while (bufferRef.current && Date.now() - start < 5000) {
+      await new Promise((r) => setTimeout(r, 40));
+    }
+    const rest = bufferRef.current;
+    bufferRef.current = "";
+    const stream = streamRef.current;
+    if (rest && stream) {
+      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, rest));
+    }
+  }, [appendBlocks]);
 
   useEffect(() => {
     getWorkspace()
@@ -79,6 +216,63 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         });
       })
       .catch(() => {});
+  }, []);
+
+  const sendMessage = useCallback(
+    async (text: string) => {
+      if (state.busy) return;
+      const sessionId = state.activeId;
+      if (!sessionId) return;
+      setState((s) => ({ ...s, busy: true }));
+      sawErrorRef.current = false;
+      bufferRef.current = "";
+      const userMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "user",
+        content: text,
+      };
+      const assistantMsg: ChatMessage = {
+        id: crypto.randomUUID(),
+        role: "assistant",
+        blocks: [],
+      };
+      streamRef.current = { sessionId, messageId: assistantMsg.id };
+      setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((sess) =>
+          sess.id !== sessionId
+            ? sess
+            : {
+                ...sess,
+                title: sess.title === "新对话" ? deriveTitle(text) : sess.title,
+                messages: [...sess.messages, userMsg, assistantMsg],
+              },
+        ),
+      }));
+      try {
+        await sendMessageApi(sessionId, text);
+      } catch (e) {
+        if (!sawErrorRef.current) {
+          appendBlocks(sessionId, assistantMsg.id, (b) => [
+            ...b,
+            { kind: "error", text: String(e) },
+          ]);
+        }
+      } finally {
+        await drainBuffer();
+        streamRef.current = null;
+        setState((s) => ({ ...s, busy: false }));
+      }
+    },
+    [state.busy, state.activeId, appendBlocks, drainBuffer],
+  );
+
+  const stop = useCallback(async () => {
+    try {
+      await stopMessageApi();
+    } catch {
+      /* 停止命令失败时维持现状 */
+    }
   }, []);
 
   const switchWorkspace = useCallback(async (path: string) => {
@@ -140,12 +334,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     () => ({
       ...state,
       activeSession: state.sessions.find((x) => x.id === state.activeId),
+      sendMessage,
+      stop,
       switchWorkspace,
       newSession,
       selectSession,
       deleteSession,
     }),
-    [state, switchWorkspace, newSession, selectSession, deleteSession],
+    [state, sendMessage, stop, switchWorkspace, newSession, selectSession, deleteSession],
   );
 
   return (
