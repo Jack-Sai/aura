@@ -11,7 +11,9 @@ import {
 } from "react";
 import {
   getWorkspace,
+  loadSessions,
   removeSession,
+  saveSession,
   sendMessage as sendMessageApi,
   setWorkspace,
   stopMessage as stopMessageApi,
@@ -91,9 +93,19 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     busy: false,
   });
 
+  const stateRef = useRef(state);
+  stateRef.current = state;
+
   const bufferRef = useRef("");
   const streamRef = useRef<StreamTarget | null>(null);
   const sawErrorRef = useRef(false);
+
+  const persistNow = useCallback(
+    (id: string, title: string, workspace: string, messages: ChatMessage[]) => {
+      saveSession(id, title, workspace, messages).catch(() => {});
+    },
+    [],
+  );
 
   const appendBlocks = useCallback(
     (sessionId: string, messageId: string, updater: (blocks: Block[]) => Block[]) => {
@@ -199,14 +211,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, [appendBlocks]);
 
   useEffect(() => {
-    getWorkspace()
-      .then((ws) => {
+    Promise.all([getWorkspace(), loadSessions()])
+      .then(([ws, saved]) => {
         setState((s) => {
-          const workspaces = s.workspaces.includes(ws)
-            ? s.workspaces
-            : [ws, ...s.workspaces];
-          let sessions = s.sessions;
-          let activeId = s.activeId;
+          const restored: Session[] = saved.map((x) => ({
+            id: x.id,
+            title: x.title,
+            workspace: x.workspace,
+            messages: x.messages,
+          }));
+          const workspaces = [ws, ...restored.map((r) => r.workspace), ...s.workspaces].filter(
+            (w, i, arr) => arr.indexOf(w) === i,
+          );
+          let sessions = restored;
+          let activeId = "";
+          const active = restored.find((r) => r.workspace === ws) ?? restored[0];
+          if (active) activeId = active.id;
           if (!sessions.some((x) => x.id === activeId)) {
             const ns = createSession(ws);
             sessions = [...sessions, ns];
@@ -236,19 +256,24 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         role: "assistant",
         blocks: [],
       };
+      const current = stateRef.current.sessions.find((x) => x.id === sessionId);
+      if (!current) {
+        setState((s) => ({ ...s, busy: false }));
+        return;
+      }
+      const title =
+        current.title === "新对话" ? deriveTitle(text) : current.title;
+      const messages = [...current.messages, userMsg, assistantMsg];
       streamRef.current = { sessionId, messageId: assistantMsg.id };
       setState((s) => ({
         ...s,
         sessions: s.sessions.map((sess) =>
           sess.id !== sessionId
             ? sess
-            : {
-                ...sess,
-                title: sess.title === "新对话" ? deriveTitle(text) : sess.title,
-                messages: [...sess.messages, userMsg, assistantMsg],
-              },
+            : { ...sess, title, messages },
         ),
       }));
+      persistNow(sessionId, title, current.workspace, messages);
       try {
         await sendMessageApi(sessionId, text);
       } catch (e) {
@@ -262,9 +287,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await drainBuffer();
         streamRef.current = null;
         setState((s) => ({ ...s, busy: false }));
+        await new Promise((r) => setTimeout(r, 0));
+        const latest = stateRef.current.sessions.find(
+          (x) => x.id === sessionId,
+        );
+        if (latest) {
+          persistNow(sessionId, latest.title, latest.workspace, latest.messages);
+        }
       }
     },
-    [state.busy, state.activeId, appendBlocks, drainBuffer],
+    [state.busy, state.activeId, appendBlocks, drainBuffer, persistNow],
   );
 
   const stop = useCallback(async () => {

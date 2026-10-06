@@ -76,21 +76,35 @@ pub async fn send_message(
     let global_rules = state.global_rules.lock().map_err(lock_err)?.clone();
 
     let mut sessions = state.sessions.lock().await;
-    let session = sessions
-        .entry(session_id.clone())
-        .or_insert_with(Session::new);
+    let session_id_for_load = session_id.clone();
+    let session = sessions.entry(session_id.clone()).or_insert_with(|| {
+        state
+            .db
+            .lock()
+            .ok()
+            .and_then(|db| db::load_history(&db, &session_id_for_load).ok())
+            .flatten()
+            .map(|(history, model_idx)| Session { history, model_idx })
+            .unwrap_or_else(Session::new)
+    });
     let session = &mut *session;
-    let mut ctx = TurnContext {
-        app: &app,
-        client: &state.client,
-        workspace: &workspace,
-        global_rules: &global_rules,
-        history: &mut session.history,
-        model_idx: &mut session.model_idx,
-        session_id: &session_id,
-        cancelled: &state.cancelled,
+    let result = {
+        let mut ctx = TurnContext {
+            app: &app,
+            client: &state.client,
+            workspace: &workspace,
+            global_rules: &global_rules,
+            history: &mut session.history,
+            model_idx: &mut session.model_idx,
+            session_id: &session_id,
+            cancelled: &state.cancelled,
+        };
+        run_turn(&mut ctx, message).await
     };
-    run_turn(&mut ctx, message).await
+    if let Ok(db) = state.db.lock() {
+        let _ = db::save_history(&db, &session_id, &session.history, session.model_idx);
+    }
+    result
 }
 
 #[tauri::command]
@@ -101,7 +115,43 @@ pub fn stop_message(state: State<'_, AppState>) {
 #[tauri::command]
 pub async fn remove_session(state: State<'_, AppState>, session_id: String) -> Result<(), String> {
     state.sessions.lock().await.remove(&session_id);
-    Ok(())
+    let db = state.db.lock().map_err(lock_err)?;
+    db::delete_session(&db, &session_id).map_err(|e| e.to_string())
+}
+
+#[derive(serde::Serialize)]
+pub struct SessionSnapshot {
+    pub id: String,
+    pub title: String,
+    pub workspace: String,
+    pub messages: Vec<Value>,
+}
+
+#[tauri::command]
+pub fn load_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSnapshot>, String> {
+    let db = state.db.lock().map_err(lock_err)?;
+    let saved = db::load_sessions(&db).map_err(|e| e.to_string())?;
+    Ok(saved
+        .into_iter()
+        .map(|s| SessionSnapshot {
+            id: s.id,
+            title: s.title,
+            workspace: s.workspace,
+            messages: s.messages,
+        })
+        .collect())
+}
+
+#[tauri::command]
+pub fn save_session(
+    state: State<'_, AppState>,
+    id: String,
+    title: String,
+    workspace: String,
+    messages: Vec<Value>,
+) -> Result<(), String> {
+    let db = state.db.lock().map_err(lock_err)?;
+    db::save_session(&db, &id, &title, &workspace, &messages).map_err(|e| e.to_string())
 }
 
 #[tauri::command]

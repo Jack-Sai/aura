@@ -5,8 +5,8 @@ pub mod db;
 pub mod tools;
 
 use commands::{
-    get_global_rules, get_workspace, remove_session, send_message, set_global_rules,
-    set_workspace, stop_message, AppState,
+    get_global_rules, get_workspace, load_sessions, remove_session, save_session, send_message,
+    set_global_rules, set_workspace, stop_message, AppState,
 };
 use tauri::Manager;
 
@@ -35,6 +35,8 @@ pub fn run() {
             send_message,
             stop_message,
             remove_session,
+            load_sessions,
+            save_session,
             set_workspace,
             get_workspace,
             get_global_rules,
