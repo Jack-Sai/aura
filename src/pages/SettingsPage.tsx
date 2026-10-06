@@ -71,7 +71,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
 
   return (
     <div className="min-h-full bg-surface">
-      <div className="mx-auto w-full max-w-3xl px-8 py-8">
+      <div className="mx-auto w-full max-w-4xl px-8 py-8 xl:max-w-5xl">
         <button
           type="button"
           onClick={onClose}
