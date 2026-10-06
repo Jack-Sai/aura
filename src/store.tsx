@@ -223,7 +223,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const restored: Session[] = saved.map((x) => ({
             id: x.id,
             title: x.title,
-            workspace: x.workspace,
+            workspace: x.workspace.replace(/\\/g, "/"),
             messages: x.messages,
           }));
           const workspaces = [ws, ...restored.map((r) => r.workspace), ...s.workspaces].filter(
@@ -314,23 +314,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const switchWorkspace = useCallback(async (path: string) => {
-    await setWorkspace(path);
+    const canonical = await setWorkspace(path);
     setState((s) => {
-      const workspaces = [path, ...s.workspaces.filter((w) => w !== path)];
+      const workspaces = [canonical, ...s.workspaces.filter((w) => w !== canonical)].filter(
+        (w, i, arr) => arr.indexOf(w) === i,
+      );
       let sessions = s.sessions;
       let activeId = s.activeId;
       const active = sessions.find((x) => x.id === activeId);
-      if (!active || active.workspace !== path) {
-        const inWs = sessions.filter((x) => x.workspace === path);
+      if (!active || active.workspace !== canonical) {
+        const inWs = sessions.filter((x) => x.workspace === canonical);
         if (inWs.length > 0) {
           activeId = inWs[inWs.length - 1].id;
         } else {
-          const ns = createSession(path);
+          const ns = createSession(canonical);
           sessions = [...sessions, ns];
           activeId = ns.id;
         }
       }
-      return { ...s, workspaces, workspace: path, sessions, activeId };
+      return { ...s, workspaces, workspace: canonical, sessions, activeId };
     });
   }, []);
 
