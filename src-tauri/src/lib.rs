@@ -1,8 +1,8 @@
 // Learn more about Tauri commands at https://tauri.app/develop/calling-rust/
-mod agent;
-mod api;
-mod db;
-mod tools;
+pub mod agent;
+pub mod api;
+pub mod db;
+pub mod tools;
 
 #[tauri::command]
 fn greet(name: &str) -> String {
