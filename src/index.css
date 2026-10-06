@@ -137,3 +137,264 @@
     outline-offset: 2px;
   }
 }
+
+/* ---------------------------------------------------------------
+   Markdown (.md)
+   --------------------------------------------------------------- */
+
+@layer components {
+  .md {
+    font-size: 15px;
+    line-height: 1.65;
+    word-break: break-word;
+  }
+
+  .md > * + * {
+    margin-top: 0.75em;
+  }
+
+  .md h1,
+  .md h2,
+  .md h3,
+  .md h4 {
+    font-weight: 600;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+  }
+
+  .md h1 {
+    font-size: 1.4em;
+  }
+
+  .md h2 {
+    font-size: 1.2em;
+  }
+
+  .md h3 {
+    font-size: 1.08em;
+  }
+
+  .md h4 {
+    font-size: 1em;
+  }
+
+  .md ul,
+  .md ol {
+    padding-left: 1.4em;
+  }
+
+  .md ul {
+    list-style: disc;
+  }
+
+  .md ol {
+    list-style: decimal;
+  }
+
+  .md li + li {
+    margin-top: 0.3em;
+  }
+
+  .md a {
+    color: var(--color-brand);
+    text-decoration: underline;
+    text-underline-offset: 2px;
+  }
+
+  .md blockquote {
+    border-left: 2px solid var(--line);
+    padding-left: 0.9em;
+    color: var(--subtle);
+  }
+
+  .md hr {
+    border: none;
+    border-top: 1px solid var(--line);
+    margin: 1.2em 0;
+  }
+
+  .md table {
+    border-collapse: collapse;
+    width: 100%;
+    font-size: 0.94em;
+  }
+
+  .md th,
+  .md td {
+    border: 1px solid var(--line);
+    padding: 0.4em 0.75em;
+    text-align: left;
+  }
+
+  .md th {
+    background-color: var(--surface-sunken);
+    font-weight: 600;
+  }
+
+  .md img {
+    max-width: 100%;
+  }
+
+  .md :not(pre) > code {
+    font-family: var(--font-mono);
+    font-size: 0.88em;
+    background-color: var(--surface-sunken);
+    border: 1px solid var(--line);
+    border-radius: 4px;
+    padding: 0.1em 0.35em;
+  }
+
+  .md pre {
+    background-color: var(--surface-sunken);
+    border: 1px solid var(--line);
+    border-radius: 0.75rem;
+    padding: 0.9rem 1rem;
+    overflow-x: auto;
+  }
+
+  .md pre code {
+    font-family: var(--font-mono);
+    font-size: 13px;
+    line-height: 1.6;
+    background: none;
+    border: none;
+    padding: 0;
+  }
+
+  .md .katex-display {
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 0.2em 0;
+  }
+}
+
+/* ---------------------------------------------------------------
+   highlight.js (light / dark)
+   --------------------------------------------------------------- */
+
+@layer components {
+  .hljs {
+    color: #24292f;
+    background: transparent;
+  }
+
+  .hljs-comment,
+  .hljs-quote {
+    color: #6e7781;
+    font-style: italic;
+  }
+
+  .hljs-keyword,
+  .hljs-selector-tag,
+  .hljs-template-tag,
+  .hljs-deletion {
+    color: #cf222e;
+  }
+
+  .hljs-string,
+  .hljs-meta .hljs-string,
+  .hljs-regexp,
+  .hljs-addition {
+    color: #0a3069;
+  }
+
+  .hljs-number,
+  .hljs-literal,
+  .hljs-symbol,
+  .hljs-bullet {
+    color: #0550ae;
+  }
+
+  .hljs-title,
+  .hljs-title.function_,
+  .hljs-section {
+    color: #8250df;
+  }
+
+  .hljs-built_in,
+  .hljs-type,
+  .hljs-class .hljs-title {
+    color: #953800;
+  }
+
+  .hljs-attr,
+  .hljs-attribute,
+  .hljs-variable,
+  .hljs-template-variable,
+  .hljs-params {
+    color: #0550ae;
+  }
+
+  .hljs-meta,
+  .hljs-doctag {
+    color: #57606a;
+  }
+
+  .hljs-tag {
+    color: #116329;
+  }
+
+  .hljs-name {
+    color: #116329;
+  }
+
+  .dark .hljs {
+    color: #e6edf3;
+  }
+
+  .dark .hljs-comment,
+  .dark .hljs-quote {
+    color: #8b949e;
+  }
+
+  .dark .hljs-keyword,
+  .dark .hljs-selector-tag,
+  .dark .hljs-template-tag,
+  .dark .hljs-deletion {
+    color: #ff7b72;
+  }
+
+  .dark .hljs-string,
+  .dark .hljs-meta .hljs-string,
+  .dark .hljs-regexp,
+  .dark .hljs-addition {
+    color: #a5d6ff;
+  }
+
+  .dark .hljs-number,
+  .dark .hljs-literal,
+  .dark .hljs-symbol,
+  .dark .hljs-bullet {
+    color: #79c0ff;
+  }
+
+  .dark .hljs-title,
+  .dark .hljs-title.function_,
+  .dark .hljs-section {
+    color: #d2a8ff;
+  }
+
+  .dark .hljs-built_in,
+  .dark .hljs-type,
+  .dark .hljs-class .hljs-title {
+    color: #ffa657;
+  }
+
+  .dark .hljs-attr,
+  .dark .hljs-attribute,
+  .dark .hljs-variable,
+  .dark .hljs-template-variable,
+  .dark .hljs-params {
+    color: #79c0ff;
+  }
+
+  .dark .hljs-meta,
+  .dark .hljs-doctag {
+    color: #8b949e;
+  }
+
+  .dark .hljs-tag,
+  .dark .hljs-name {
+    color: #7ee787;
+  }
+}
