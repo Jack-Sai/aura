@@ -111,19 +111,9 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
           <h2 className="eyebrow">模型服务</h2>
           <div className="mt-4 flex items-center justify-between">
             <span className="text-sm font-medium">提供商</span>
-            <div className="relative">
-              <select
-                defaultValue="openrouter"
-                disabled
-                aria-label="提供商"
-                className="appearance-none rounded-full border border-line bg-surface py-1 pl-3 pr-7 text-sm text-subtle outline-none disabled:opacity-60"
-              >
-                <option value="openrouter">OpenRouter</option>
-              </select>
-              <span className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-subtle">
-                ▾
-              </span>
-            </div>
+            <span className="rounded-full border border-line bg-surface px-3 py-1 text-sm text-subtle">
+              OpenRouter
+            </span>
           </div>
 
           <label htmlFor="api-key" className="mt-5 block text-sm font-medium">

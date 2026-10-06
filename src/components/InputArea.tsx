@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
-import { ArrowUp, ChevronDown, Square } from "lucide-react";
+import { ArrowUp, Square } from "lucide-react";
 import type { ModelInfo } from "../lib/api";
+import ModelSelect from "./ModelSelect";
 
 interface Props {
   onSend: (text: string) => void;
@@ -79,26 +80,11 @@ export default function InputArea({
         )}
       </div>
       <div className="mx-auto mt-2 flex w-full max-w-3xl items-center justify-between">
-        <div className="relative">
-          <select
-            value={selectedModel}
-            onChange={(e) => onModelChange(e.target.value)}
-            disabled={models.length === 0}
-            aria-label="选择模型"
-            className="appearance-none rounded-full border border-line bg-surface py-1 pl-3 pr-7 text-xs text-subtle outline-none transition-colors hover:text-foreground focus:border-brand disabled:opacity-60"
-          >
-            {models.length === 0 && <option value="">加载中…</option>}
-            {models.map((m) => (
-              <option key={m.id} value={m.id}>
-                {m.label}
-              </option>
-            ))}
-          </select>
-          <ChevronDown
-            size={12}
-            className="pointer-events-none absolute right-2.5 top-1/2 -translate-y-1/2 text-subtle"
-          />
-        </div>
+        <ModelSelect
+          models={models}
+          selectedModel={selectedModel}
+          onChange={onModelChange}
+        />
         <p className="text-xs text-subtle">Enter 发送 · Shift+Enter 换行</p>
       </div>
     </div>
