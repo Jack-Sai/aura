@@ -10,6 +10,49 @@ pub struct ToolOutput {
     pub result: String,
 }
 
+pub struct ToolFail {
+    pub label: String,
+    pub error: String,
+}
+
+pub fn tool_label(name: &str, args: &Value) -> String {
+    match name {
+        "list_files" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("/")
+                .trim();
+            if path == "/" || path.is_empty() {
+                "Read /".to_string()
+            } else {
+                format!("Read {}/", display_path(path))
+            }
+        }
+        "read_file" => {
+            let path = args
+                .get("path")
+                .and_then(|v| v.as_str())
+                .unwrap_or("");
+            let start = args.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1);
+            let end = match args.get("end_line") {
+                Some(Value::Number(n)) => n.to_string(),
+                _ => "end".to_string(),
+            };
+            if start == 1 && end == "end" {
+                format!("Read {}", display_path(path))
+            } else {
+                format!("Read {} L{} - L{}", display_path(path), start, end)
+            }
+        }
+        "search_workspace" => {
+            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
+            format!("Search '{}'", query)
+        }
+        other => other.to_string(),
+    }
+}
+
 pub fn resolve_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     let path = path.trim();
     if path.is_empty() {
@@ -60,13 +103,15 @@ fn display_path(path: &str) -> String {
     }
 }
 
-pub fn execute(workspace: &Path, name: &str, args: &Value) -> Result<ToolOutput, String> {
-    match name {
+pub fn execute(workspace: &Path, name: &str, args: &Value) -> Result<ToolOutput, ToolFail> {
+    let label = tool_label(name, args);
+    let result = match name {
         "list_files" => fs_ops::list_files(workspace, args),
         "read_file" => fs_ops::read_file(workspace, args),
         "search_workspace" => search::search_workspace(workspace, args),
         other => Err(format!("未知工具: {}", other)),
-    }
+    };
+    result.map_err(|error| ToolFail { label, error })
 }
 
 #[cfg(test)]

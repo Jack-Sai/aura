@@ -159,7 +159,10 @@ impl Parser {
                 Finish::Ok
             }
             State::Tool => {
-                self.tool_buf.clear();
+                let buf = std::mem::take(&mut self.tool_buf);
+                if !buf.trim().is_empty() {
+                    out.push(Event::Tool(buf.trim().to_string()));
+                }
                 Finish::UnclosedTool
             }
             State::Probe(buf) => {
@@ -234,7 +237,7 @@ mod tests {
     #[test]
     fn unclosed_tool_reported() {
         let (events, finish) = feed_all(&["<tool>{\"x\":1}"]);
-        assert!(events.is_empty());
+        assert!(matches!(&events[0], Event::Tool(t) if t == "{\"x\":1}"));
         assert!(matches!(finish, Finish::UnclosedTool));
     }
 
