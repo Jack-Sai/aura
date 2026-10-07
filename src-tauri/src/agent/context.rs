@@ -1,6 +1,6 @@
 use serde_json::{json, Value};
 
-use crate::api::OpenRouterClient;
+use crate::api::Router;
 
 pub const COMPRESSION_THRESHOLD: f64 = 0.85;
 const KEEP_RECENT_MESSAGES: usize = 4;
@@ -97,7 +97,7 @@ pub fn local_trim(messages: &[Value], context_limit: usize, extra_tokens: usize)
 }
 
 pub async fn compress(
-    client: &OpenRouterClient,
+    router: &Router,
     model_idx: usize,
     messages: &[Value],
     context_limit: usize,
@@ -120,7 +120,7 @@ pub async fn compress(
         transcript
     );
 
-    let summary = client
+    let summary = router
         .complete_with_fallback(model_idx, &[json!({ "role": "user", "content": prompt })])
         .await
         .ok()?

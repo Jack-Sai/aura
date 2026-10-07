@@ -6,7 +6,7 @@ use futures_util::StreamExt;
 use serde_json::{json, Value};
 use tauri::{AppHandle, Emitter};
 
-use crate::api::{MODELS, OpenRouterClient};
+use crate::api::Router;
 use crate::tools;
 use super::context::{compress, estimate_tokens, local_trim, needs_compression};
 use super::parser::{Event, Finish, Parser};
@@ -23,7 +23,7 @@ const MAX_PARSE_RETRIES: u32 = 3;
 
 pub struct TurnContext<'a> {
     pub app: &'a AppHandle,
-    pub client: &'a OpenRouterClient,
+    pub router: &'a Router,
     pub workspace: &'a Path,
     pub global_rules: &'a str,
     pub history: &'a mut Vec<Value>,
@@ -136,12 +136,12 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             return Err("max tool rounds exceeded".into());
         }
 
-        let limit = MODELS[*ctx.model_idx].context_limit;
+        let limit = ctx.router.context_limit(*ctx.model_idx);
         let ws_display = ctx.workspace.display().to_string().replace('\\', "/");
         let system = build_system_prompt(&ws_display, ctx.global_rules);
         let system_tokens = estimate_tokens(&system) + 4;
         if needs_compression(ctx.history, limit, system_tokens) {
-            match compress(ctx.client, *ctx.model_idx, ctx.history, limit).await {
+            match compress(ctx.router, *ctx.model_idx, ctx.history, limit).await {
                 Some(new) => {
                     *ctx.history = new;
                 }
@@ -171,7 +171,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         messages.push(json!({ "role": "system", "content": system }));
         messages.extend(ctx.history.iter().cloned());
 
-        let fb = match ctx.client.stream_with_fallback(*ctx.model_idx, &messages).await {
+        let fb = match ctx.router.stream_with_fallback(*ctx.model_idx, &messages).await {
             Ok(fb) => fb,
             Err(e) => {
                 emit_text(ctx.app, ctx.session_id, EV_ERROR, &format!("请求失败：{}", e));

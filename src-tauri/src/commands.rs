@@ -9,8 +9,8 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::runner::{run_turn, TurnContext};
-use crate::api::config::{load_config, save_config, RouterConfig};
-use crate::api::OpenRouterProvider;
+use crate::api::config::{load_config, save_config};
+use crate::api::Router;
 use crate::db;
 
 pub struct Session {
@@ -28,14 +28,12 @@ impl Session {
 }
 
 pub struct AppState {
-    pub client: OpenRouterProvider,
+    pub router: Router,
     pub sessions: AsyncMutex<HashMap<String, Session>>,
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
     pub cancelled: AtomicBool,
     pub db: Mutex<Connection>,
-    /// 模型供应商与降级链配置（v0.2.0 配置驱动）
-    pub config: Mutex<RouterConfig>,
 }
 
 /// Windows 上 `canonicalize()` 会返回 `\\?\` 扩展前缀路径，若与
@@ -87,22 +85,14 @@ impl AppState {
                 }
             }
         }
-        let api_key = config
-            .providers
-            .iter()
-            .find(|p| p.id == "openrouter")
-            .map(|p| p.api_key.trim().to_string())
-            .filter(|k| !k.is_empty());
-        let client = OpenRouterProvider::openrouter();
-        client.set_api_key(api_key);
+        let router = Router::new(config);
         Self {
-            client,
+            router,
             sessions: AsyncMutex::new(HashMap::new()),
             workspace: Mutex::new(workspace),
             global_rules: Mutex::new(global_rules),
             cancelled: AtomicBool::new(false),
             db: Mutex::new(db),
-            config: Mutex::new(config),
         }
     }
 }
@@ -122,8 +112,8 @@ pub async fn send_message(
     if message.is_empty() {
         return Err("消息不能为空".into());
     }
-    if !state.client.has_api_key() {
-        return Err("未配置 OPENROUTER_API_KEY 环境变量".into());
+    if !state.router.has_credentials() {
+        return Err("未配置模型服务凭据，请在设置中填写 API Key".into());
     }
     state.cancelled.store(false, Ordering::Relaxed);
     let workspace = state.workspace.lock().map_err(lock_err)?.clone();
@@ -131,17 +121,7 @@ pub async fn send_message(
 
     let mut sessions = state.sessions.lock().await;
     let session_id_for_load = session_id.clone();
-    let default_model = state
-        .config
-        .lock()
-        .map_err(lock_err)
-        .and_then(|cfg| {
-            cfg.models
-                .iter()
-                .position(|m| m.key() == cfg.selected)
-                .ok_or_else(|| lock_err(()))
-        })
-        .unwrap_or(0);
+    let default_model = state.router.selected_index();
     let session = sessions.entry(session_id.clone()).or_insert_with(|| {
         state
             .db
@@ -156,7 +136,7 @@ pub async fn send_message(
     let result = {
         let mut ctx = TurnContext {
             app: &app,
-            client: &state.client,
+            router: &state.router,
             workspace: &workspace,
             global_rules: &global_rules,
             history: &mut session.history,
@@ -276,10 +256,7 @@ pub struct ModelInfo {
 
 #[tauri::command]
 pub fn get_models(state: State<'_, AppState>) -> Vec<ModelInfo> {
-    let cfg = match state.config.lock() {
-        Ok(c) => c,
-        Err(_) => return Vec::new(),
-    };
+    let cfg = state.router.config();
     cfg.models
         .iter()
         .filter(|m| m.enabled)
@@ -295,30 +272,25 @@ pub fn get_models(state: State<'_, AppState>) -> Vec<ModelInfo> {
 
 #[tauri::command]
 pub fn get_selected_model(state: State<'_, AppState>) -> String {
-    state
-        .config
-        .lock()
-        .map(|c| c.selected.clone())
-        .unwrap_or_default()
+    state.router.config().selected
 }
 
 #[tauri::command]
 pub fn set_selected_model(state: State<'_, AppState>, id: String) -> Result<(), String> {
-    let pos = {
-        let mut cfg = state.config.lock().map_err(lock_err)?;
-        // 兼容复合 key 与 v0.1.x 裸 id 两种入参
-        let pos = cfg
-            .models
-            .iter()
-            .position(|m| m.key() == id)
-            .or_else(|| cfg.models.iter().position(|m| m.id == id))
-            .ok_or_else(|| "未知模型".to_string())?;
-        cfg.selected = cfg.models[pos].key();
-        let json_cfg = cfg.clone();
+    let mut cfg = state.router.config();
+    // 兼容复合 key 与 v0.1.x 裸 id 两种入参
+    let pos = cfg
+        .models
+        .iter()
+        .position(|m| m.key() == id)
+        .or_else(|| cfg.models.iter().position(|m| m.id == id))
+        .ok_or_else(|| "未知模型".to_string())?;
+    cfg.selected = cfg.models[pos].key();
+    state.router.set_config(cfg.clone());
+    {
         let db = state.db.lock().map_err(lock_err)?;
-        save_config(&db, &json_cfg)?;
-        pos
-    };
+        save_config(&db, &cfg)?;
+    }
     if let Ok(mut sessions) = state.sessions.try_lock() {
         for session in sessions.values_mut() {
             session.model_idx = pos;
@@ -335,12 +307,14 @@ pub struct ApiConfig {
 
 #[tauri::command]
 pub fn get_api_config(state: State<'_, AppState>) -> ApiConfig {
-    let cfg = state.config.lock();
+    let cfg = state.router.config();
     ApiConfig {
         provider: "openrouter".to_string(),
         api_key: cfg
-            .ok()
-            .and_then(|c| c.providers.iter().find(|p| p.id == "openrouter").map(|p| p.api_key.clone()))
+            .providers
+            .iter()
+            .find(|p| p.id == "openrouter")
+            .map(|p| p.api_key.clone())
             .unwrap_or_default(),
     }
 }
@@ -362,9 +336,10 @@ pub fn set_api_config(
     } else {
         Some(key.clone())
     };
-    state.client.set_api_key(effective);
-    let mut cfg = state.config.lock().map_err(lock_err)?;
+    state.router.set_provider_key("openrouter", effective);
+    let mut cfg = state.router.config();
     if let Some(p) = cfg.providers.iter_mut().find(|p| p.id == "openrouter") {
+        // 持久化原始输入（空串=清除）；环境变量仅作运行时兜底
         p.api_key = key;
     }
     let db = state.db.lock().map_err(lock_err)?;
