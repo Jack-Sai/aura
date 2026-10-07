@@ -37,6 +37,21 @@ pub fn azure_chat_endpoint(base_url: &str, deployment: &str, api_version: &str) 
     )
 }
 
+/// base 是否指向本机回环地址（localhost/127.0.0.1/::1）。
+/// 回环上的 OpenAI 兼容端点（vLLM/LM Studio 等本地框架）通常无需密钥。
+pub fn is_loopback_base(url: &str) -> bool {
+    let rest = url
+        .trim()
+        .trim_start_matches("https://")
+        .trim_start_matches("http://");
+    let authority = rest.split('/').next().unwrap_or("");
+    let host = match authority.strip_prefix('[') {
+        Some(v) => v.split(']').next().unwrap_or(""),
+        None => authority.split(':').next().unwrap_or(""),
+    };
+    host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
+}
+
 /// 模型列表端点（同 chat 规则，将尾部替换为 /models）。
 pub fn models_endpoint(kind: ProviderKind, base_url: &str) -> String {
     let base = base_url.trim_end_matches('/');
@@ -347,11 +362,14 @@ impl ChatProvider for CompatProvider {
     }
 
     fn ready(&self) -> bool {
-        if self.kind.requires_api_key() {
-            self.has_api_key()
-        } else {
-            true
+        if !self.kind.requires_api_key() {
+            return true;
         }
+        if self.has_api_key() {
+            return true;
+        }
+        // 本地回环的兼容端点（vLLM/LM Studio 等）通常无需密钥
+        is_loopback_base(&self.base_url)
     }
 
     fn stream<'a>(
@@ -445,6 +463,71 @@ mod tests {
             models_endpoint(ProviderKind::LlamaCpp, "http://127.0.0.1:8080"),
             "http://127.0.0.1:8080/v1/models"
         );
+    }
+
+    #[test]
+    fn local_framework_endpoint_matrix() {
+        // vLLM（默认监听 8000，OpenAI 兼容口在 /v1）
+        assert_eq!(
+            chat_endpoint(ProviderKind::Custom, "http://localhost:8000"),
+            "http://localhost:8000/v1/chat/completions"
+        );
+        assert_eq!(
+            models_endpoint(ProviderKind::Custom, "http://localhost:8000"),
+            "http://localhost:8000/v1/models"
+        );
+        // LM Studio（默认 1234，OpenAI 兼容口）
+        assert_eq!(
+            chat_endpoint(ProviderKind::OpenAi, "http://localhost:1234"),
+            "http://localhost:1234/v1/chat/completions"
+        );
+        assert_eq!(
+            models_endpoint(ProviderKind::OpenAi, "http://localhost:1234"),
+            "http://localhost:1234/v1/models"
+        );
+        // llama.cpp server：显式 /v1 与尾斜杠容错
+        assert_eq!(
+            chat_endpoint(ProviderKind::LlamaCpp, "http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(
+            models_endpoint(ProviderKind::LlamaCpp, "http://127.0.0.1:8080/v1"),
+            "http://127.0.0.1:8080/v1/models"
+        );
+        assert_eq!(
+            chat_endpoint(ProviderKind::LlamaCpp, "http://127.0.0.1:8080/"),
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        // 本地框架无需鉴权即可就绪
+        assert!(CompatProvider::new(
+            "vlm",
+            ProviderKind::Custom,
+            "http://localhost:8000",
+            None,
+            Default::default(),
+        )
+        .ready());
+        assert!(CompatProvider::new(
+            "lms",
+            ProviderKind::OpenAi,
+            "http://localhost:1234",
+            None,
+            Default::default(),
+        )
+        .ready());
+    }
+
+    #[test]
+    fn loopback_detection_for_local_frameworks() {
+        assert!(is_loopback_base("http://localhost:8000"));
+        assert!(is_loopback_base("http://127.0.0.1:1234/v1"));
+        assert!(is_loopback_base("http://LOCALHOST:8080"));
+        assert!(is_loopback_base("http://[::1]:8080"));
+        assert!(is_loopback_base("https://127.0.0.1"));
+        assert!(!is_loopback_base("https://api.openai.com"));
+        assert!(!is_loopback_base("http://192.168.1.5:8000"));
+        assert!(!is_loopback_base("http://127.0.0.2"));
+        assert!(!is_loopback_base(""));
     }
 
     #[test]

@@ -84,7 +84,11 @@ impl Router {
             .filter(|p| p.enabled)
             .any(|p| match p.kind {
                 ProviderKind::Ollama | ProviderKind::LlamaCpp => true,
-                _ => !p.api_key.trim().is_empty(),
+                // 回环地址的兼容端点（vLLM/LM Studio）无需密钥
+                _ => {
+                    !p.api_key.trim().is_empty()
+                        || super::compat::is_loopback_base(&p.base_url)
+                }
             })
     }
 
