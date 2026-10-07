@@ -1,4 +1,4 @@
-import { open } from "@tauri-apps/plugin-dialog";
+﻿import { open } from "@tauri-apps/plugin-dialog";
 import { ChevronRight, Plus, Settings, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
@@ -78,7 +78,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
           type="button"
           onClick={pickWorkspace}
           aria-label="添加工作区"
-          className="rounded p-0.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+          className="rounded-tag p-0.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
         >
           <Plus size={14} />
         </button>
@@ -131,7 +131,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                   type="button"
                   onClick={() => newSession(w)}
                   aria-label="在此工作区新建对话"
-                  className="mr-1 rounded p-1 text-subtle opacity-0 transition-all hover:bg-surface hover:text-foreground group-hover:opacity-100"
+                  className="mr-1 rounded-tag p-1 text-subtle opacity-0 transition-all hover:bg-surface hover:text-foreground group-hover:opacity-100"
                 >
                   <Plus size={13} />
                 </button>
@@ -166,7 +166,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                               renameSession(s.id, e.currentTarget.value);
                               cancelRename();
                             }}
-                            className="min-w-0 flex-1 rounded border border-brand bg-surface px-2 py-1 text-sm text-foreground outline-none"
+                            className="min-w-0 flex-1 rounded-lg border border-brand bg-surface px-2 py-1.5 text-sm text-foreground outline-none"
                           />
                         ) : (
                           <button
@@ -182,7 +182,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                             type="button"
                             onClick={() => deleteSession(s.id)}
                             aria-label="删除对话"
-                            className="mr-1 rounded p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
+                            className="mr-1 rounded-tag p-1 text-subtle opacity-0 transition-opacity hover:text-foreground group-hover:opacity-100"
                           >
                             <Trash2 size={13} />
                           </button>

@@ -11,7 +11,7 @@ export default function TitleBar() {
   useEffect(() => {
     getVersion()
       .then((v) => setVersion(v))
-      .catch(() => setVersion("0.1.1"));
+      .catch(() => setVersion("0.1.2"));
   }, []);
 
   return (
@@ -47,7 +47,7 @@ export default function TitleBar() {
           type="button"
           onClick={() => appWindow.close()}
           aria-label="关闭"
-          className="flex h-full w-11 items-center justify-center text-subtle transition-colors hover:bg-danger hover:text-white"
+          className="flex h-full w-11 items-center justify-center text-subtle transition-colors hover:bg-danger hover:text-white dark:hover:text-surface"
         >
           <X size={14} />
         </button>

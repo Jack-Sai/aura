@@ -118,6 +118,8 @@
   --line: #e5e5ea;
   --bubble: #f5f5f7;
   --danger: #d70015;
+  /* 正文链接色：亮色下用品牌蓝 */
+  --link: #0066cc;
 }
 
 .dark {
@@ -127,9 +129,11 @@
   --surface-sunken: #1c1c1e;
   --foreground: #f5f5f7;
   --subtle: #98989d;
-  --line: #2c2c2e;
+  --line: #454547;
   --bubble: #1c1c1e;
   --danger: #ff453a;
+  /* 暗色下品牌蓝对比度不足（3.4:1），链接改用更亮的蓝（7.6:1） */
+  --link: #4da3ff;
 }
 
 @theme inline {
@@ -140,6 +144,7 @@
   --color-line: var(--line);
   --color-bubble: var(--bubble);
   --color-danger: var(--danger);
+  --color-link: var(--link);
 }
 
 /* ---------------------------------------------------------------
@@ -269,7 +274,7 @@
   }
 
   .md a {
-    color: var(--color-brand);
+    color: var(--color-link);
     text-decoration: underline;
     text-underline-offset: 2px;
   }

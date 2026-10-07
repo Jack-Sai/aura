@@ -25,8 +25,10 @@ function renderBlock(block: Block, i: number) {
   }
 }
 
-function AssistantMessage({ blocks }: { blocks: Block[] }) {
+function AssistantMessage({ blocks, pending }: { blocks: Block[]; pending: boolean }) {
   if (blocks.length === 0) {
+    // 仅等待首字期间显示呼吸光标；历史空消息不渲染
+    if (!pending) return null;
     return (
       <div className="min-h-[1.6em] leading-relaxed">
         <span className="aura-breathing-cursor" aria-hidden="true" />
@@ -56,12 +58,14 @@ function EmptyState() {
 }
 
 export default function MessageList() {
-  const { activeSession } = useStore();
+  const { activeSession, busy } = useStore();
   const messages = activeSession?.messages ?? [];
 
   if (messages.length === 0) {
     return <EmptyState />;
   }
+
+  const lastIndex = messages.length - 1;
 
   return (
     <div className="mx-auto flex w-full max-w-4xl flex-col gap-6 px-6 py-6 xl:max-w-5xl 2xl:max-w-6xl">
@@ -69,7 +73,11 @@ export default function MessageList() {
         m.role === "user" ? (
           <UserBubble key={i} content={m.content} />
         ) : (
-          <AssistantMessage key={i} blocks={m.blocks} />
+          <AssistantMessage
+            key={i}
+            blocks={m.blocks}
+            pending={busy && i === lastIndex}
+          />
         ),
       )}
     </div>

@@ -232,10 +232,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const stream = streamRef.current;
       if (!buf || !stream) return;
       const chars = Array.from(buf);
-      const n = Math.min(
-        chars.length,
-        chars.length > 150 ? 8 : chars.length > 50 ? 3 : 1,
-      );
+      const backlog = chars.length;
+      // 自适应消费：正常流逐字推进（打字机节奏），
+      // 网络突发积压时按时间预算加速，约 0.5s 内追平，避免卡顿滞后
+      let n: number;
+      if (backlog <= 60) {
+        n = backlog > 40 ? 2 : 1;
+      } else if (backlog <= 300) {
+        n = Math.ceil(backlog / 30);
+      } else {
+        n = Math.ceil(backlog / 15) + 4;
+      }
+      n = Math.min(Math.max(n, 1), backlog);
       const take = chars.slice(0, n).join("");
       bufferRef.current = chars.slice(n).join("");
       appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, take));

@@ -1,7 +1,8 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import { getApiConfig, getGlobalRules, setApiConfig, setGlobalRules } from "../lib/api";
+import { useStore } from "../store";
 
 interface Props {
   onClose: () => void;
@@ -18,6 +19,7 @@ const SECTIONS = [
 type SectionId = (typeof SECTIONS)[number]["id"];
 
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
+  const { models, selectedModel, setModel } = useStore();
   const [section, setSection] = useState<SectionId>("appearance");
   const [rules, setRules] = useState("");
   const [saved, setSaved] = useState(false);
@@ -186,6 +188,49 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                   >
                     {keySaved ? "已保存" : "保存"}
                   </button>
+                </div>
+
+                <div className="mt-6 border-t border-line pt-5">
+                  <span className="text-sm font-medium">模型列表</span>
+                  <p className="mt-1 text-xs text-subtle">
+                    按列表顺序作为降级链：主模型 429 限流或故障时自动切换到下一个可用模型
+                  </p>
+                  <ul role="listbox" aria-label="模型列表" className="mt-3 space-y-1">
+                    {models.map((m, i) => {
+                      const isActive = m.id === selectedModel;
+                      return (
+                        <li key={m.id}>
+                          <button
+                            type="button"
+                            role="option"
+                            aria-selected={isActive}
+                            onClick={() => {
+                              if (!isActive) setModel(m.id);
+                            }}
+                            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                              isActive ? "bg-bubble" : "hover:bg-bubble"
+                            }`}
+                          >
+                            <span className="w-5 shrink-0 text-xs text-subtle">
+                              {i + 1}
+                            </span>
+                            <span className="min-w-0 flex-1 truncate">
+                              {m.label}
+                              <span className="ml-2 font-mono text-[11px] text-subtle">
+                                {m.id}
+                              </span>
+                            </span>
+                            <span className="shrink-0 rounded-full border border-line bg-surface px-1.5 py-0.5 text-[10px] text-subtle">
+                              {Math.round(m.context_limit / 1024)}K
+                            </span>
+                            <span className="flex w-4 shrink-0 justify-end">
+                              {isActive && <Check size={13} className="text-brand" />}
+                            </span>
+                          </button>
+                        </li>
+                      );
+                    })}
+                  </ul>
                 </div>
               </section>
             )}

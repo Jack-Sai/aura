@@ -176,7 +176,7 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
                   removeWorkspace(confirmWs);
                   setConfirmWs(null);
                 }}
-                className="rounded-full bg-danger px-4 py-1.5 text-sm text-white transition-colors hover:opacity-90"
+                className="rounded-full bg-danger px-4 py-1.5 text-sm text-white transition-colors hover:opacity-90 dark:text-surface"
               >
                 删除
               </button>
