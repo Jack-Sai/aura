@@ -2,8 +2,8 @@ use std::collections::VecDeque;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+use super::error::{classify_reqwest, classify_status, ApiError};
 use futures_util::Stream;
-use reqwest::StatusCode;
 use serde_json::Value;
 
 const OPENROUTER_ENDPOINT: &str = "https://openrouter.ai/api/v1/chat/completions";
@@ -36,56 +36,6 @@ pub const MODELS: &[Model] = &[
         context_limit: 131072,
     },
 ];
-
-#[derive(Debug, Clone)]
-pub enum ApiError {
-    RateLimited,
-    ServerError(u16),
-    Timeout,
-    Network(String),
-    Auth(String),
-    BadResponse(String),
-}
-
-impl std::fmt::Display for ApiError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            ApiError::RateLimited => write!(f, "429 rate limited"),
-            ApiError::ServerError(code) => write!(f, "server error {}", code),
-            ApiError::Timeout => write!(f, "request timeout"),
-            ApiError::Network(msg) => write!(f, "network error: {}", msg),
-            ApiError::Auth(msg) => write!(f, "auth error: {}", msg),
-            ApiError::BadResponse(msg) => write!(f, "bad response: {}", msg),
-        }
-    }
-}
-
-impl ApiError {
-    pub fn is_retriable(&self) -> bool {
-        matches!(
-            self,
-            ApiError::RateLimited | ApiError::ServerError(_) | ApiError::Timeout | ApiError::Network(_)
-        )
-    }
-}
-
-fn classify_status(status: StatusCode, body: String) -> ApiError {
-    let body = body.chars().take(500).collect::<String>();
-    match status.as_u16() {
-        429 => ApiError::RateLimited,
-        code @ 500..=599 => ApiError::ServerError(code),
-        401 | 403 => ApiError::Auth(body),
-        _ => ApiError::BadResponse(format!("{} {}", status, body)),
-    }
-}
-
-fn classify_reqwest(err: reqwest::Error) -> ApiError {
-    if err.is_timeout() {
-        ApiError::Timeout
-    } else {
-        ApiError::Network(err.to_string())
-    }
-}
 
 /// 增量解析 SSE 行，提取 delta.content 文本
 pub struct SseParser {
