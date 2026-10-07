@@ -204,6 +204,36 @@ pub struct Fallback<T> {
     pub notice: Option<String>,
 }
 
+impl super::provider::ChatProvider for OpenRouterProvider {
+    fn id(&self) -> &str {
+        self.name
+    }
+
+    fn kind(&self) -> super::provider::ProviderKind {
+        super::provider::ProviderKind::OpenRouter
+    }
+
+    fn ready(&self) -> bool {
+        self.has_api_key()
+    }
+
+    fn stream<'a>(
+        &'a self,
+        model: &'a str,
+        messages: &'a [Value],
+    ) -> impl std::future::Future<Output = Result<ChatStream, ApiError>> + Send + 'a {
+        OpenRouterProvider::stream(self, model, messages)
+    }
+
+    fn complete<'a>(
+        &'a self,
+        model: &'a str,
+        messages: &'a [Value],
+    ) -> impl std::future::Future<Output = Result<String, ApiError>> + Send + 'a {
+        OpenRouterProvider::complete(self, model, messages)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
