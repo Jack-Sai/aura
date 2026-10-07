@@ -29,6 +29,7 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 bytes = "1.12.1"
 tokio = { version = "1.53.2", features = ["sync", "macros", "time", "rt"] }
 tauri-plugin-dialog = "2.8.1"
+regex = "1.10"
 
 [features]
 # 生产构建启用；tauri dev 由 CLI 以 --no-default-features 关闭以使用 devUrl

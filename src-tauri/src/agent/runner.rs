@@ -10,7 +10,7 @@ use crate::api::Router;
 use crate::tools;
 use super::context::{compress, estimate_tokens, local_trim, needs_compression};
 use super::parser::{Event, Finish, Parser};
-use super::prompt::build_system_prompt;
+use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
 
 pub const EV_CHUNK: &str = "agent:chunk";
 pub const EV_ACTION: &str = "agent:action";
@@ -20,6 +20,7 @@ pub const EV_DONE: &str = "agent:done";
 
 const MAX_TOOL_ROUNDS: usize = 50;
 const MAX_PARSE_RETRIES: u32 = 3;
+const MAX_PARSE_RETRIES_SMALL: u32 = 1;
 
 pub struct TurnContext<'a> {
     pub app: &'a AppHandle,
@@ -138,7 +139,26 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
 
         let limit = ctx.router.context_limit(*ctx.model_idx);
         let ws_display = ctx.workspace.display().to_string().replace('\\', "/");
-        let system = build_system_prompt(&ws_display, ctx.global_rules);
+
+        // 获取当前模型 ID 以判断是否为小模型
+        let model_id = {
+            let cfg = ctx.router.config();
+            let idx = *ctx.model_idx;
+            let idx = idx.min(cfg.models.len().saturating_sub(1));
+            cfg.models
+                .get(idx)
+                .map(|m| m.id.clone())
+                .unwrap_or_default()
+        };
+        let is_small = is_small_model(&model_id);
+        let max_parse_retries = if is_small { MAX_PARSE_RETRIES_SMALL } else { MAX_PARSE_RETRIES };
+
+        // 小模型使用精简 System Prompt，减少 Token 消耗
+        let system = if is_small {
+            build_compact_system_prompt(&ws_display, ctx.global_rules)
+        } else {
+            build_system_prompt(&ws_display, ctx.global_rules)
+        };
         let system_tokens = estimate_tokens(&system) + 4;
         if needs_compression(ctx.history, limit, system_tokens) {
             match compress(ctx.router, *ctx.model_idx, ctx.history, limit).await {
@@ -170,6 +190,16 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let mut messages = Vec::with_capacity(ctx.history.len() + 1);
         messages.push(json!({ "role": "system", "content": system }));
         messages.extend(ctx.history.iter().cloned());
+
+        // TTFT 反馈：本地模型推理较慢，提前告知用户
+        if ctx.router.is_local_model(*ctx.model_idx) {
+            emit_text(
+                ctx.app,
+                ctx.session_id,
+                EV_NOTICE,
+                "正在向本地模型推理，首字可能需要较长时间...",
+            );
+        }
 
         let fb = match ctx.router.stream_with_fallback(*ctx.model_idx, &messages).await {
             Ok(fb) => fb,
@@ -308,7 +338,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 }
                 push_assistant(ctx.history, &turn_output);
                 parse_failures += 1;
-                if parse_failures > MAX_PARSE_RETRIES {
+                if parse_failures > max_parse_retries {
                     emit_text(ctx.app, ctx.session_id, EV_ERROR, "模型解析失败，请重试。");
                     return Err("model output parse failed".into());
                 }
@@ -352,7 +382,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     ),
                 );
                 parse_failures += 1;
-                if parse_failures > MAX_PARSE_RETRIES {
+                if parse_failures > max_parse_retries {
                     if !turn_output.is_empty() {
                         emit_text(
                             ctx.app,

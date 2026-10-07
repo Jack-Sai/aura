@@ -50,3 +50,68 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
 
     p
 }
+
+/// 精简版 System Prompt（用于小参数本地模型，减少 Token 消耗与认知负荷）。
+pub fn build_compact_system_prompt(workspace: &str, global_rules: &str) -> String {
+    let mut p = String::new();
+    p.push_str(
+        "你是 Aura，在本地工作区运行的 AI Agent。可用工具：list_files、read_file、search_workspace。\n\
+         工作区：",
+    );
+    p.push_str(workspace);
+    p.push('\n');
+
+    p.push_str(
+        "工具调用格式：<tool>{\"name\": \"工具名\", \"args\": {...}}</tool>\n\
+         最终回答用 <answer>...</answer> 包裹。\n\
+         路径用 /，禁绝对路径与 ..。\n",
+    );
+
+    let rules = global_rules.trim();
+    if !rules.is_empty() {
+        p.push_str("\n全局规则：");
+        p.push_str(rules);
+        p.push('\n');
+    }
+
+    p
+}
+
+/// 根据模型 ID 判断是否为小参数模型（<= 7B 视为小模型）。
+pub fn is_small_model(model_id: &str) -> bool {
+    let lower = model_id.to_lowercase();
+    // 匹配如 0.6b, 1b, 3b, 7b, 8b 等；不匹配 70b, 72b 等
+    if let Some(caps) = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*[bB]").unwrap().captures(&lower) {
+        if let Some(m) = caps.get(1) {
+            if let Ok(v) = m.as_str().parse::<f32>() {
+                return v <= 7.0;
+            }
+        }
+    }
+    false
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn small_model_detection() {
+        assert!(is_small_model("qwen3:0.6b"));
+        assert!(is_small_model("llama3.2:1b"));
+        assert!(is_small_model("phi3:3.8b"));
+        assert!(is_small_model("gemma2:7b"));
+        assert!(is_small_model("model-7B"));
+        assert!(!is_small_model("llama3:8b"));
+        assert!(!is_small_model("nemotron-3.5-lightning"));
+        assert!(!is_small_model("gpt-4o"));
+        assert!(!is_small_model("model-70b"));
+    }
+
+    #[test]
+    fn compact_prompt_shorter() {
+        let full = build_system_prompt("/ws", "");
+        let compact = build_compact_system_prompt("/ws", "");
+        assert!(compact.len() < full.len() / 2);
+    }
+}
