@@ -348,6 +348,90 @@ pub fn set_providers(
     save_config(&db, &cfg)
 }
 
+#[derive(serde::Serialize)]
+pub struct ProviderStatus {
+    pub id: String,
+    pub ok: bool,
+    pub latency_ms: u64,
+    pub message: String,
+}
+
+/// 并发探测全部启用供应商的连通性（设置页状态点）。
+#[tauri::command]
+pub async fn get_provider_statuses(
+    state: State<'_, AppState>,
+) -> Result<Vec<ProviderStatus>, String> {
+    use crate::api::ChatProvider;
+    let cfg = state.router.config();
+    let enabled: Vec<String> = cfg
+        .providers
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| p.id.clone())
+        .collect();
+    let mut tasks = Vec::with_capacity(enabled.len());
+    for id in enabled {
+        let exec = state.router.executor_for(&id);
+        tasks.push((
+            id,
+            tokio::spawn(async move {
+                match exec {
+                    Some(e) => e.probe().await.unwrap_or_else(|err| crate::api::ProbeStatus {
+                        ok: false,
+                        latency_ms: 0,
+                        message: err.to_string(),
+                    }),
+                    None => crate::api::ProbeStatus {
+                        ok: false,
+                        latency_ms: 0,
+                        message: "供应商未启用".to_string(),
+                    },
+                }
+            }),
+        ));
+    }
+    let mut out = Vec::with_capacity(tasks.len());
+    for (id, handle) in tasks {
+        let s = handle.await.map_err(|e| e.to_string())?;
+        out.push(ProviderStatus {
+            id,
+            ok: s.ok,
+            latency_ms: s.latency_ms,
+            message: s.message,
+        });
+    }
+    Ok(out)
+}
+
+/// 拉取供应商远端模型列表合并进配置；返回新增模型数。
+/// Ollama 通过 `/api/tags` 把本地已安装模型注入模型下拉。
+#[tauri::command]
+pub async fn refresh_provider_models(
+    state: State<'_, AppState>,
+    provider: String,
+) -> Result<usize, String> {
+    use crate::api::ChatProvider;
+    let exec = state
+        .router
+        .executor_for(&provider)
+        .ok_or_else(|| "供应商不存在或未启用".to_string())?;
+    let remote = exec.list_models().await.map_err(|e| e.to_string())?;
+    let is_local = exec.kind().is_local();
+    drop(exec);
+    let tags: Vec<String> = if is_local {
+        vec!["local".to_string()]
+    } else {
+        Vec::new()
+    };
+    let mut cfg = state.router.config();
+    let added = crate::api::config::merge_remote_models(&mut cfg, &provider, remote, &tags);
+    let cfg = normalize(cfg);
+    state.router.set_config(cfg.clone());
+    let db = state.db.lock().map_err(lock_err)?;
+    save_config(&db, &cfg)?;
+    Ok(added)
+}
+
 #[tauri::command]
 pub fn get_api_config(state: State<'_, AppState>) -> ApiConfig {
     let cfg = state.router.config();

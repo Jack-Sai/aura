@@ -58,10 +58,5 @@ mod tests {
         assert_eq!(fb.model_idx, 2);
         assert!(fb.notice.unwrap().contains("降级"));
         assert_eq!(fb.value, "ok");
-        let _ = json_unused();
-    }
-
-    fn json_unused() -> Value {
-        serde_json::Value::Null
     }
 }

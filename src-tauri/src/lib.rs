@@ -5,10 +5,10 @@ pub mod db;
 pub mod tools;
 
 use commands::{
-    get_api_config, get_global_rules, get_models, get_providers, get_selected_model,
-    get_workspace, load_sessions, remove_session, remove_workspace, save_session, send_message,
-    set_api_config, set_global_rules, set_providers, set_selected_model, set_workspace,
-    stop_message, AppState,
+    get_api_config, get_global_rules, get_models, get_provider_statuses, get_providers,
+    get_selected_model, get_workspace, load_sessions, refresh_provider_models, remove_session,
+    remove_workspace, save_session, send_message, set_api_config, set_global_rules, set_providers,
+    set_selected_model, set_workspace, stop_message, AppState,
 };
 use tauri::Manager;
 
@@ -98,6 +98,8 @@ pub fn run() {
             set_api_config,
             get_providers,
             set_providers,
+            get_provider_statuses,
+            refresh_provider_models,
             remove_workspace
         ])
         .run(tauri::generate_context!())

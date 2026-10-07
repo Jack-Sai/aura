@@ -2,7 +2,7 @@ use rusqlite::Connection;
 use serde::{Deserialize, Serialize};
 
 use super::client::MODELS;
-use super::provider::ProviderKind;
+use super::provider::{ProviderKind, RemoteModel};
 
 /// 持久化于 settings 表的配置键。
 pub const CONFIG_KEY: &str = "model_config";
@@ -153,6 +153,36 @@ pub fn save_config(conn: &Connection, cfg: &RouterConfig) -> Result<(), String> 
     crate::db::set_setting(conn, CONFIG_KEY, &json).map_err(|e| e.to_string())
 }
 
+/// 合并供应商远端模型列表：已存在的（同 provider+id）不重复追加，
+/// 本地已配置但远端缺失的条目保留（如离线时的快照）。返回新增数量。
+pub fn merge_remote_models(
+    cfg: &mut RouterConfig,
+    provider: &str,
+    remote: Vec<RemoteModel>,
+    tags: &[String],
+) -> usize {
+    let mut added = 0;
+    for m in remote {
+        if cfg
+            .models
+            .iter()
+            .any(|x| x.provider == provider && x.id == m.id)
+        {
+            continue;
+        }
+        cfg.models.push(ModelConfig {
+            provider: provider.to_string(),
+            id: m.id,
+            label: m.label,
+            context_limit: m.context_limit,
+            enabled: true,
+            tags: tags.to_vec(),
+        });
+        added += 1;
+    }
+    added
+}
+
 /// 配置不变量：过滤供应商已不存在的模型；selected 必须指向
 /// 当前可选（provider 与模型均启用）的条目，否则回退首个可选项。
 pub fn normalize(mut cfg: RouterConfig) -> RouterConfig {
@@ -277,6 +307,69 @@ mod tests {
         assert_eq!(cfg.models.len(), 4);
         // 没有可选项时回退到出厂默认 key
         assert_eq!(cfg.selected, model_key("openrouter", MODELS[0].id));
+    }
+
+    #[test]
+    fn merge_remote_models_appends_new_keeps_local() {
+        let mut cfg = default_config();
+        cfg.providers.push(ProviderConfig {
+            id: "ollama".into(),
+            kind: ProviderKind::Ollama,
+            name: "Ollama".into(),
+            base_url: "http://localhost:11434".into(),
+            api_key: String::new(),
+            headers: serde_json::Map::new(),
+            deployment: None,
+            api_version: None,
+            enabled: true,
+        });
+        let remote = vec![
+            RemoteModel {
+                id: "llama3:8b".into(),
+                label: "Llama3 8B".into(),
+                context_limit: 8192,
+            },
+            RemoteModel {
+                id: "qwen3:0.6b".into(),
+                label: "Qwen3 0.6B".into(),
+                context_limit: 32768,
+            },
+        ];
+        let added = merge_remote_models(&mut cfg, "ollama", remote, &["local".into()]);
+        assert_eq!(added, 2);
+        assert_eq!(cfg.models.len(), MODELS.len() + 2);
+
+        // 同 provider+id 重复注入不新增；远端缺失的本地条目保留
+        let dup = vec![RemoteModel {
+            id: "llama3:8b".into(),
+            label: "Llama3 8B".into(),
+            context_limit: 8192,
+        }];
+        let added = merge_remote_models(&mut cfg, "ollama", dup, &["local".into()]);
+        assert_eq!(added, 0);
+        assert_eq!(cfg.models.len(), MODELS.len() + 2);
+
+        // 同 id 不同 provider 视为不同模型（如 openrouter/qwen 与 ollama/qwen）
+        let added = merge_remote_models(
+            &mut cfg,
+            "ollama",
+            vec![RemoteModel {
+                id: MODELS[0].id.into(),
+                label: "dup".into(),
+                context_limit: 1,
+            }],
+            &[],
+        );
+        assert_eq!(added, 1);
+
+        let merged = cfg.models.iter().find(|m| m.id == "qwen3:0.6b").unwrap();
+        assert_eq!(merged.provider, "ollama");
+        assert_eq!(merged.tags, vec!["local".to_string()]);
+        assert_eq!(merged.key(), "ollama:qwen3:0.6b");
+
+        // normalize 后供应商仍在，模型保留
+        let cfg = normalize(cfg);
+        assert!(cfg.models.iter().any(|m| m.provider == "ollama"));
     }
 
     #[test]
