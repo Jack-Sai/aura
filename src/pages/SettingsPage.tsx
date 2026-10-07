@@ -197,15 +197,15 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                   </p>
                   <ul role="listbox" aria-label="模型列表" className="mt-3 space-y-1">
                     {models.map((m, i) => {
-                      const isActive = m.id === selectedModel;
+                      const isActive = m.key === selectedModel;
                       return (
-                        <li key={m.id}>
+                        <li key={m.key}>
                           <button
                             type="button"
                             role="option"
                             aria-selected={isActive}
                             onClick={() => {
-                              if (!isActive) setModel(m.id);
+                              if (!isActive) setModel(m.key);
                             }}
                             className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
                               isActive ? "bg-bubble" : "hover:bg-bubble"

@@ -10,6 +10,9 @@ export interface SavedSession {
 
 export interface ModelInfo {
   id: string;
+  /** `{provider}:{id}` 复合 key（选中/切换主键） */
+  key: string;
+  provider: string;
   label: string;
   context_limit: number;
 }

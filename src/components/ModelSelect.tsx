@@ -35,7 +35,7 @@ export function parseModelId(id: string): ParsedModel {
 }
 
 interface ModelGroup {
-  vendor: string;
+  provider: string;
   models: ModelInfo[];
 }
 
@@ -62,15 +62,14 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
   const groups = useMemo<ModelGroup[]>(() => {
     const out: ModelGroup[] = [];
     for (const m of models) {
-      const { vendor } = parseModelId(m.id);
       const last = out[out.length - 1];
-      if (last && last.vendor === vendor) last.models.push(m);
-      else out.push({ vendor, models: [m] });
+      if (last && last.provider === m.provider) last.models.push(m);
+      else out.push({ provider: m.provider, models: [m] });
     }
     return out;
   }, [models]);
 
-  const selected = models.find((m) => m.id === selectedModel);
+  const selected = models.find((m) => m.key === selectedModel);
   const parsed = selected ? parseModelId(selected.id) : null;
 
   return (
@@ -103,21 +102,21 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
           className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[420px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
         >
           {groups.map((g) => (
-            <div key={g.vendor}>
+            <div key={g.provider}>
               <div className="px-3 pb-1 pt-2 text-[11px] text-subtle">
-                {g.vendor}
+                {g.provider}
               </div>
               {g.models.map((m) => {
                 const p = parseModelId(m.id);
-                const isActive = m.id === selectedModel;
+                const isActive = m.key === selectedModel;
                 return (
                   <button
-                    key={m.id}
+                    key={m.key}
                     type="button"
                     role="option"
                     aria-selected={isActive}
                     onClick={() => {
-                      onChange(m.id);
+                      onChange(m.key);
                       setOpen(false);
                     }}
                     className={`flex w-full items-center gap-3 px-3 py-2 text-left text-sm transition-colors ${
