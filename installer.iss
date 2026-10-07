@@ -1,19 +1,19 @@
-; Aura Inno Setup installer script
+﻿; Aura Inno Setup 安装脚本（中文引导页，需 UTF-8 with BOM）
 
 [Setup]
 AppId={{0012DB8B-711D-4965-8935-F7E3E10A2D81}}
 AppName=Aura
-AppVersion=0.1.0
+AppVersion=0.1.1
 AppPublisher=JackSai
 AppPublisherURL=https://github.com/Jack-Sai/aura
 AppSupportURL=https://github.com/Jack-Sai/aura/issues
-VersionInfoVersion=0.1.0
+VersionInfoVersion=0.1.1
 DefaultDirName={autopf}\Aura
 DefaultGroupName=Aura
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE
 OutputDir=dist\installer
-OutputBaseFilename=Aura_0.1.0_win_x64_Setup
+OutputBaseFilename=Aura_0.1.1_win_x64_Setup
 SetupIconFile=src-tauri\icons\icon.ico
 UninstallDisplayIcon={app}\aura.exe
 UninstallDisplayName=Aura
@@ -26,10 +26,10 @@ PrivilegesRequired=admin
 CloseApplications=yes
 
 [Languages]
-Name: "english"; MessagesFile: "compiler:Default.isl"
+Name: "chinesesimplified"; MessagesFile: "installer\ChineseSimplified.isl"
 
 [Tasks]
-Name: "desktopicon"; Description: "Create a desktop shortcut"; GroupDescription: "Additional shortcuts:"
+Name: "desktopicon"; Description: "创建桌面快捷方式"; GroupDescription: "附加快捷方式:"
 
 [Files]
 Source: "src-tauri\target\release\aura.exe"; DestDir: "{app}"; Flags: ignoreversion
@@ -39,7 +39,7 @@ Name: "{group}\Aura"; Filename: "{app}\aura.exe"
 Name: "{autodesktop}\Aura"; Filename: "{app}\aura.exe"; Tasks: desktopicon
 
 [Run]
-Filename: "{app}\aura.exe"; Description: "Launch Aura"; Flags: nowait postinstall skipifsilent
+Filename: "{app}\aura.exe"; Description: "运行 Aura"; Flags: nowait postinstall skipifsilent
 
 [Code]
 function WebView2Installed(): Boolean;
@@ -58,8 +58,8 @@ end;
 function InitializeSetup(): Boolean;
 begin
   if not WebView2Installed() then
-    MsgBox('Microsoft Edge WebView2 Runtime was not detected. Aura may fail to start.' + #13#10 + #13#10 +
-      'Install it from:' + #13#10 +
+    MsgBox('未检测到 Microsoft Edge WebView2 运行时，Aura 可能无法启动。' + #13#10 + #13#10 +
+      '安装地址:' + #13#10 +
       'https://developer.microsoft.com/en-us/microsoft-edge/webview2/',
       mbInformation, MB_OK);
   Result := True;
