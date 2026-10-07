@@ -1,5 +1,3 @@
-use serde_json::Value;
-
 pub struct Model {
     pub id: &'static str,
     pub label: &'static str,
