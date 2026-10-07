@@ -1,10 +1,12 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
+import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Check, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import {
   getGlobalRules,
   getProviderStatuses,
   getProviders,
+  pullOllamaModel,
   refreshProviderModels,
   setGlobalRules,
   setProviders,
@@ -66,6 +68,28 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const [statuses, setStatuses] = useState<Record<string, ProviderStatus>>({});
   const [probeBusy, setProbeBusy] = useState(false);
   const [refreshNote, setRefreshNote] = useState<Record<string, string>>({});
+  const [pullInputs, setPullInputs] = useState<Record<string, string>>({});
+  const [pulls, setPulls] = useState<
+    Record<string, { status: string; percent: number | null; failed?: boolean }>
+  >({});
+  const [pulling, setPulling] = useState<Record<string, boolean>>({});
+
+  useEffect(() => {
+    const un = listen<{
+      provider: string;
+      status: string;
+      percent: number | null;
+    }>("ollama_pull", (e) => {
+      const { provider, status, percent } = e.payload;
+      setPulls((prev) => ({
+        ...prev,
+        [provider]: { status, percent, failed: prev[provider]?.failed },
+      }));
+    });
+    return () => {
+      un.then((f) => f());
+    };
+  }, []);
 
   useEffect(() => {
     getGlobalRules()
@@ -118,6 +142,35 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
         ...n,
         [id]: typeof e === "string" ? e : "刷新失败",
       }));
+    }
+  }
+
+  async function startPull(id: string) {
+    const model = (pullInputs[id] ?? "").trim();
+    if (!model || pulling[id]) return;
+    setPulling((p) => ({ ...p, [id]: true }));
+    setPulls((p) => ({
+      ...p,
+      [id]: { status: "连接 Ollama…", percent: null },
+    }));
+    try {
+      const added = await pullOllamaModel(id, model);
+      setPulls((p) => ({
+        ...p,
+        [id]: { status: `完成，新增 ${added} 个模型`, percent: 100 },
+      }));
+      if (added > 0) await refreshModels();
+    } catch (e) {
+      setPulls((p) => ({
+        ...p,
+        [id]: {
+          status: typeof e === "string" ? e : "拉取失败",
+          percent: null,
+          failed: true,
+        },
+      }));
+    } finally {
+      setPulling((p) => ({ ...p, [id]: false }));
     }
   }
 
@@ -467,6 +520,65 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                 />
                               </div>
                             </>
+                          )}
+                          {p.kind === "ollama" && (
+                            <div className="sm:col-span-2 rounded-lg border border-dashed border-line p-3">
+                              <div className="flex items-center gap-2">
+                                <input
+                                  value={pullInputs[p.id] ?? ""}
+                                  onChange={(e) =>
+                                    setPullInputs((m) => ({
+                                      ...m,
+                                      [p.id]: e.target.value,
+                                    }))
+                                  }
+                                  onKeyDown={(e) => {
+                                    if (e.key === "Enter") startPull(p.id);
+                                  }}
+                                  placeholder="qwen3:0.6b"
+                                  aria-label="要拉取的模型名"
+                                  className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                />
+                                <button
+                                  type="button"
+                                  onClick={() => startPull(p.id)}
+                                  disabled={pulling[p.id]}
+                                  className="shrink-0 rounded-full bg-brand px-3 py-1.5 text-xs text-white transition-colors enabled:hover:bg-brand-strong disabled:opacity-60"
+                                >
+                                  {pulling[p.id] ? "拉取中…" : "拉取模型"}
+                                </button>
+                              </div>
+                              {pulls[p.id] && (
+                                <div className="mt-2">
+                                  <div className="h-1.5 w-full overflow-hidden rounded-full bg-line">
+                                    <div
+                                      className={`h-full rounded-full transition-all ${
+                                        pulls[p.id].failed
+                                          ? "bg-danger"
+                                          : "bg-brand"
+                                      } ${
+                                        pulls[p.id].percent == null
+                                          ? "w-1/3 animate-pulse"
+                                          : ""
+                                      }`}
+                                      style={
+                                        pulls[p.id].percent != null
+                                          ? {
+                                              width: `${pulls[p.id].percent}%`,
+                                            }
+                                          : undefined
+                                      }
+                                    />
+                                  </div>
+                                  <p className="mt-1 text-xs text-subtle">
+                                    {pulls[p.id].status}
+                                    {pulls[p.id].percent != null &&
+                                      pulls[p.id].status !== "done" &&
+                                      ` ${pulls[p.id].percent}%`}
+                                  </p>
+                                </div>
+                              )}
+                            </div>
                           )}
                         </div>
                       </div>

@@ -432,6 +432,87 @@ pub async fn refresh_provider_models(
     Ok(added)
 }
 
+/// 解析 Ollama `/api/pull` NDJSON 行 → (状态文案, 百分比)。
+/// 仅进度类行含 total/completed；manifest 等阶段 percent 为 None。
+pub fn parse_pull_line(line: &str) -> Option<(String, Option<f64>)> {
+    let v: Value = serde_json::from_str(line).ok()?;
+    let status = v.get("status")?.as_str()?.to_string();
+    let percent = match (
+        v.get("completed").and_then(|c| c.as_u64()),
+        v.get("total").and_then(|t| t.as_u64()),
+    ) {
+        (Some(c), Some(t)) if t > 0 => Some((c as f64 / t as f64 * 100.0 * 10.0).round() / 10.0),
+        _ => None,
+    };
+    Some((status, percent))
+}
+
+/// Ollama 模型拉取：POST `/api/pull`（NDJSON 流），进度经 `ollama_pull`
+/// 事件推送；完成后自动把新模型合并进配置。返回新增模型数。
+#[tauri::command]
+pub async fn pull_ollama_model(
+    app: AppHandle,
+    state: State<'_, AppState>,
+    provider: String,
+    model: String,
+) -> Result<usize, String> {
+    use futures_util::StreamExt;
+    use tauri::Emitter;
+
+    let base = state
+        .router
+        .config()
+        .providers
+        .iter()
+        .find(|p| p.id == provider && p.enabled)
+        .map(|p| p.base_url.trim_end_matches('/').to_string())
+        .ok_or_else(|| "供应商不存在或未启用".to_string())?;
+    let resp = reqwest::Client::new()
+        .post(format!("{base}/api/pull"))
+        .json(&serde_json::json!({ "name": model, "stream": true }))
+        .send()
+        .await
+        .map_err(|e| format!("无法连接 Ollama：{e}"))?;
+    if !resp.status().is_success() {
+        let status = resp.status();
+        let body = resp.text().await.unwrap_or_default();
+        return Err(format!("拉取失败（HTTP {status}）：{body}"));
+    }
+
+    let mut stream = resp.bytes_stream();
+    let mut buf = String::new();
+    while let Some(chunk) = stream.next().await {
+        let chunk = chunk.map_err(|e| format!("读取进度流失败：{e}"))?;
+        buf.push_str(&String::from_utf8_lossy(&chunk));
+        while let Some(pos) = buf.find('\n') {
+            let line: String = buf.drain(..=pos).collect();
+            if let Some((status, percent)) = parse_pull_line(line.trim()) {
+                let _ = app.emit(
+                    "ollama_pull",
+                    serde_json::json!({
+                        "provider": provider,
+                        "model": model,
+                        "status": status,
+                        "percent": percent,
+                    }),
+                );
+            }
+        }
+    }
+
+    let added = refresh_provider_models(state, provider.clone()).await?;
+    let _ = app.emit(
+        "ollama_pull",
+        serde_json::json!({
+            "provider": provider,
+            "model": model,
+            "status": "done",
+            "percent": 100.0,
+        }),
+    );
+    Ok(added)
+}
+
 #[tauri::command]
 pub fn get_api_config(state: State<'_, AppState>) -> ApiConfig {
     let cfg = state.router.config();
@@ -493,6 +574,30 @@ pub async fn remove_workspace(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    #[test]
+    fn parse_pull_line_handles_phases() {
+        let (s, p) = parse_pull_line(r#"{"status":"pulling manifest"}"#).unwrap();
+        assert_eq!(s, "pulling manifest");
+        assert!(p.is_none());
+
+        let (s, p) =
+            parse_pull_line(r#"{"status":"downloading","completed":150,"total":1000}"#).unwrap();
+        assert_eq!(s, "downloading");
+        assert_eq!(p, Some(15.0));
+
+        // 百分比保留一位小数
+        let (_, p) =
+            parse_pull_line(r#"{"status":"downloading","completed":1,"total":3}"#).unwrap();
+        assert_eq!(p, Some(33.3));
+        // total=0 避免除零
+        let (_, p) =
+            parse_pull_line(r#"{"status":"downloading","completed":1,"total":0}"#).unwrap();
+        assert!(p.is_none());
+
+        assert!(parse_pull_line("{bad json").is_none());
+        assert!(parse_pull_line(r#"{"no_status":1}"#).is_none());
+    }
 
     #[test]
     fn strip_extended_prefix_plain() {

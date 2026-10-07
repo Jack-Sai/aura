@@ -130,3 +130,8 @@ export function getProviderStatuses(): Promise<ProviderStatus[]> {
 export function refreshProviderModels(provider: string): Promise<number> {
   return invoke("refresh_provider_models", { provider });
 }
+
+/** Ollama 模型拉取（进度经 `ollama_pull` 事件推送），返回新增模型数。 */
+export function pullOllamaModel(provider: string, model: string): Promise<number> {
+  return invoke("pull_ollama_model", { provider, model });
+}
