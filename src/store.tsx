@@ -24,6 +24,10 @@ import {
   type ModelInfo,
 } from "./lib/api";
 
+// 统一工作区键：反斜杠转 /，并剥离 Windows 扩展路径的 //?/ 前缀，
+// 保证与 Rust 侧 canonicalize 后的键一致
+const normWs = (p: string) => p.replace(/\\/g, "/").replace(/^\/\/\?\//, "");
+
 export type BlockKind = "text" | "action" | "notice" | "error";
 
 export interface Block {
@@ -261,17 +265,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   useEffect(() => {
     Promise.all([getWorkspace(), loadSessions(), getModels(), getSelectedModel()])
-      .then(([ws, saved, models, selectedModel]) => {
+      .then(([rawWs, saved, models, selectedModel]) => {
+        const ws = normWs(rawWs);
         setState((s) => {
           const restored: Session[] = saved.map((x) => ({
             id: x.id,
             title: x.title,
-            workspace: x.workspace.replace(/\\/g, "/"),
+            workspace: normWs(x.workspace),
             messages: x.messages,
           }));
-          const workspaces = [ws, ...restored.map((r) => r.workspace), ...s.workspaces].filter(
-            (w, i, arr) => arr.indexOf(w) === i,
-          );
+          const workspaces = [ws, ...restored.map((r) => r.workspace), ...s.workspaces]
+            .map(normWs)
+            .filter((w, i, arr) => arr.indexOf(w) === i);
           let sessions = restored;
           let activeId = "";
           const active = restored.find((r) => r.workspace === ws) ?? restored[0];

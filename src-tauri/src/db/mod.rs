@@ -45,7 +45,19 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
              PRIMARY KEY (session_id, seq)
          );",
     )?;
+    migrate(&conn)?;
     Ok(conn)
+}
+
+/// 迁移历史脏数据：早期 set_workspace 曾写入带 //?/ 扩展前缀的键，
+/// 与普通路径并存导致侧边栏出现重复的 src-tauri 分组
+pub(crate) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
+    conn.execute(
+        "UPDATE sessions SET workspace = replace(workspace, '//?/', '')
+         WHERE workspace LIKE '//?/%'",
+        [],
+    )?;
+    Ok(())
 }
 
 pub fn get_setting(conn: &Connection, key: &str) -> Result<Option<String>, rusqlite::Error> {
@@ -243,6 +255,37 @@ mod tests {
         delete_session(&conn, "s1").unwrap();
         assert!(load_sessions(&conn).unwrap().is_empty());
         assert!(load_history(&conn, "s1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn open_migrates_extended_workspace_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "migration"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+
+        let conn = open(&path).unwrap();
+        save_session(&conn, "s1", "t", "//?/E:/dev/aura", &[]).unwrap();
+        save_session(&conn, "s2", "t", "E:/dev/aura", &[]).unwrap();
+        drop(conn);
+
+        let conn = open(&path).unwrap();
+        let loaded = load_sessions(&conn).unwrap();
+        let ws1 = loaded
+            .iter()
+            .find(|s| s.id == "s1")
+            .map(|s| s.workspace.clone());
+        let ws2 = loaded
+            .iter()
+            .find(|s| s.id == "s2")
+            .map(|s| s.workspace.clone());
+        assert_eq!(ws1.as_deref(), Some("E:/dev/aura"));
+        assert_eq!(ws2.as_deref(), Some("E:/dev/aura"));
 
         std::fs::remove_dir_all(&dir).ok();
     }

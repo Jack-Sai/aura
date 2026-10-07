@@ -36,9 +36,42 @@ pub struct AppState {
     pub selected_model: Mutex<usize>,
 }
 
+/// Windows 上 `canonicalize()` 会返回 `\\?\` 扩展前缀路径，若与
+/// `current_dir()` 等普通路径混用，同一目录会产生两种工作区键，
+/// 导致侧边栏出现重复分组、会话错挂。统一剥离前缀并转为 `/` 分隔。
+pub fn strip_extended_prefix(s: &str) -> String {
+    if let Some(rest) = s.strip_prefix(r"\\?\UNC\") {
+        format!(r"\\{}", rest)
+    } else if let Some(rest) = s.strip_prefix(r"\\?\") {
+        rest.to_string()
+    } else {
+        s.to_string()
+    }
+}
+
+pub fn normalize_workspace_path(p: &std::path::Path) -> String {
+    strip_extended_prefix(&p.display().to_string()).replace('\\', "/")
+}
+
+fn home_dir() -> Option<PathBuf> {
+    std::env::var_os("USERPROFILE")
+        .or_else(|| std::env::var_os("HOME"))
+        .map(PathBuf::from)
+        .filter(|p| p.is_dir())
+}
+
 impl AppState {
     pub fn new(env_api_key: Option<String>, db: Connection) -> Self {
-        let workspace = std::env::current_dir().unwrap_or_else(|_| PathBuf::from("."));
+        // 优先恢复上次使用的工作区；无记录（首次运行）时回退到用户主目录，
+        // 避免以进程启动目录（如 src-tauri）作为工作区凭空出现
+        let workspace = db::get_setting(&db, "last_workspace")
+            .ok()
+            .flatten()
+            .filter(|s| !s.is_empty())
+            .map(PathBuf::from)
+            .filter(|p| p.is_dir())
+            .or_else(home_dir)
+            .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| PathBuf::from(".")));
         let global_rules = db::get_setting(&db, "global_rules")
             .ok()
             .flatten()
@@ -176,8 +209,13 @@ pub fn set_workspace(state: State<'_, AppState>, path: String) -> Result<String,
         return Err("不是目录".into());
     }
     let c = p.canonicalize().map_err(|e| e.to_string())?;
-    *state.workspace.lock().map_err(lock_err)? = c.clone();
-    Ok(c.display().to_string().replace('\\', "/"))
+    let normalized = normalize_workspace_path(&c);
+    {
+        let db = state.db.lock().map_err(lock_err)?;
+        let _ = db::set_setting(&db, "last_workspace", &normalized);
+    }
+    *state.workspace.lock().map_err(lock_err)? = c;
+    Ok(normalized)
 }
 
 #[tauri::command]
@@ -185,7 +223,7 @@ pub fn get_workspace(state: State<'_, AppState>) -> String {
     state
         .workspace
         .lock()
-        .map(|w| w.display().to_string().replace('\\', "/"))
+        .map(|w| normalize_workspace_path(&w))
         .unwrap_or_default()
 }
 
@@ -304,4 +342,40 @@ pub async fn remove_workspace(
     }
     let db = state.db.lock().map_err(lock_err)?;
     db::delete_workspace(&db, &path).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::Path;
+
+    #[test]
+    fn strip_extended_prefix_plain() {
+        assert_eq!(strip_extended_prefix("E:/dev/aura"), "E:/dev/aura");
+        assert_eq!(strip_extended_prefix("E:\\dev\\aura"), "E:\\dev\\aura");
+    }
+
+    #[test]
+    fn strip_extended_prefix_extended() {
+        assert_eq!(
+            strip_extended_prefix(r"\\?\E:\dev\aura"),
+            r"E:\dev\aura"
+        );
+        assert_eq!(
+            strip_extended_prefix(r"\\?\UNC\server\share\dir"),
+            r"\\server\share\dir"
+        );
+    }
+
+    #[test]
+    fn normalize_workspace_path_backslash_and_extended() {
+        assert_eq!(
+            normalize_workspace_path(Path::new(r"\\?\E:\dev\aura")),
+            "E:/dev/aura"
+        );
+        assert_eq!(
+            normalize_workspace_path(Path::new(r"E:\dev\aura")),
+            "E:/dev/aura"
+        );
+    }
 }
