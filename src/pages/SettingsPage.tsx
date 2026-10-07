@@ -56,6 +56,43 @@ function basePlaceholder(kind: ProviderKind): string {
   }
 }
 
+function isLocalKind(kind: ProviderKind): boolean {
+  return kind === "ollama" || kind === "llama_cpp";
+}
+
+/** 本地框架地址拆分为 主机 / 端口 / 路径 三段（配置端口号与接口路径）。 */
+function splitLocal(base: string): { host: string; port: string; path: string } {
+  const rest = base.replace(/^https?:\/\//, "");
+  const slash = rest.indexOf("/");
+  const authority = slash >= 0 ? rest.slice(0, slash) : rest;
+  const path = slash >= 0 ? rest.slice(slash) : "";
+  const colon = authority.lastIndexOf(":");
+  if (colon > -1) {
+    return {
+      host: authority.slice(0, colon),
+      port: authority.slice(colon + 1),
+      path,
+    };
+  }
+  return { host: authority, port: "", path };
+}
+
+function joinLocal(host: string, port: string, path: string): string {
+  const h = host.trim();
+  if (!h) return "";
+  const p = /^\d+$/.test(port.trim()) ? `:${port.trim()}` : "";
+  let s = path.trim();
+  if (s && !s.startsWith("/")) s = `/${s}`;
+  return `http://${h}${p}${s}`;
+}
+
+const LOCAL_PRESETS: { label: string; host: string; port: string; path: string }[] = [
+  { label: "Ollama", host: "127.0.0.1", port: "11434", path: "" },
+  { label: "llama.cpp", host: "127.0.0.1", port: "8080", path: "" },
+  { label: "LM Studio", host: "127.0.0.1", port: "1234", path: "" },
+  { label: "vLLM", host: "127.0.0.1", port: "8000", path: "" },
+];
+
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const { models, selectedModel, setModel, refreshModels } = useStore();
   const [section, setSection] = useState<SectionId>("appearance");
@@ -443,16 +480,88 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <div>
                             <label className="block text-xs text-subtle">
-                              接口地址
+                              {isLocalKind(p.kind) ? "主机 / 端口 / 路径" : "接口地址"}
                             </label>
-                            <input
-                              value={p.base_url}
-                              onChange={(e) =>
-                                updateProvider(i, { base_url: e.target.value })
-                              }
-                              placeholder={basePlaceholder(p.kind)}
-                              className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
-                            />
+                            {isLocalKind(p.kind) ? (
+                              <>
+                                <div className="mt-1 grid grid-cols-2 gap-1.5">
+                                  <input
+                                    value={splitLocal(p.base_url).host}
+                                    onChange={(e) =>
+                                      updateProvider(i, {
+                                        base_url: joinLocal(
+                                          e.target.value,
+                                          splitLocal(p.base_url).port,
+                                          splitLocal(p.base_url).path,
+                                        ),
+                                      })
+                                    }
+                                    placeholder="127.0.0.1"
+                                    aria-label="主机"
+                                    className="w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                  />
+                                  <input
+                                    value={splitLocal(p.base_url).port}
+                                    onChange={(e) =>
+                                      updateProvider(i, {
+                                        base_url: joinLocal(
+                                          splitLocal(p.base_url).host,
+                                          e.target.value,
+                                          splitLocal(p.base_url).path,
+                                        ),
+                                      })
+                                    }
+                                    placeholder="11434"
+                                    aria-label="端口"
+                                    className="w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                  />
+                                </div>
+                                <input
+                                  value={splitLocal(p.base_url).path}
+                                  onChange={(e) =>
+                                    updateProvider(i, {
+                                      base_url: joinLocal(
+                                        splitLocal(p.base_url).host,
+                                        splitLocal(p.base_url).port,
+                                        e.target.value,
+                                      ),
+                                    })
+                                  }
+                                  placeholder="路径（可空，如 /v1）"
+                                  aria-label="接口路径"
+                                  className="mt-1.5 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                />
+                                <div className="mt-1.5 flex flex-wrap gap-1.5">
+                                  {LOCAL_PRESETS.map((preset) => (
+                                    <button
+                                      key={preset.label}
+                                      type="button"
+                                      onClick={() =>
+                                        updateProvider(i, {
+                                          base_url: joinLocal(
+                                            preset.host,
+                                            preset.port,
+                                            preset.path,
+                                          ),
+                                        })
+                                      }
+                                      className="rounded-full border border-line px-2 py-0.5 text-[11px] text-subtle transition-colors hover:text-foreground"
+                                    >
+                                      {preset.label}
+                                    </button>
+                                  ))}
+                                </div>
+                              </>
+                            ) : (
+                              <input
+                                value={p.base_url}
+                                onChange={(e) =>
+                                  updateProvider(i, { base_url: e.target.value })
+                                }
+                                placeholder={basePlaceholder(p.kind)}
+                                className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                              />
+                            )}
                           </div>
                           <div>
                             <label className="block text-xs text-subtle">
