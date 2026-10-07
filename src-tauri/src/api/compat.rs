@@ -96,10 +96,16 @@ impl CompatProvider {
         api_key: Option<String>,
         headers: serde_json::Map<String, Value>,
     ) -> Self {
-        let http = reqwest::Client::builder()
-            .connect_timeout(std::time::Duration::from_secs(10))
-            .build()
-            .expect("failed to build http client");
+        let is_local = is_loopback_base(base_url);
+        let mut builder = reqwest::Client::builder()
+            .connect_timeout(std::time::Duration::from_secs(10));
+        // 本地服务启用连接池保活，减少 TCP 握手延迟
+        if is_local {
+            builder = builder
+                .pool_idle_timeout(std::time::Duration::from_secs(120))
+                .pool_max_idle_per_host(8);
+        }
+        let http = builder.build().expect("failed to build http client");
         Self {
             id: id.to_string(),
             kind,

@@ -150,6 +150,25 @@ impl Router {
             .unwrap_or(65536)
     }
 
+    /// 判断指定索引的模型是否为本地模型（Ollama / llama.cpp 等）。
+    pub fn is_local_model(&self, idx: usize) -> bool {
+        let Ok(cfg) = self.config.read() else {
+            return false;
+        };
+        if cfg.models.is_empty() {
+            return false;
+        }
+        let m = match cfg.models.get(idx.min(cfg.models.len().saturating_sub(1))) {
+            Some(m) => m,
+            None => return false,
+        };
+        cfg.providers
+            .iter()
+            .find(|p| p.id == m.provider)
+            .map(|p| p.kind.is_local())
+            .unwrap_or(false)
+    }
+
     /// 从 start_idx 起构建降级链：跳过被禁用的供应商与模型。
     fn chain(&self, start_idx: usize) -> Vec<ChainEntry> {
         let Ok(cfg) = self.config.read() else {
