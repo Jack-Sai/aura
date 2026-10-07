@@ -1,7 +1,14 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, Check, Eye, EyeOff } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
-import { getApiConfig, getGlobalRules, setApiConfig, setGlobalRules } from "../lib/api";
+import {
+  getGlobalRules,
+  getProviders,
+  setGlobalRules,
+  setProviders,
+  type ProviderConfig,
+  type ProviderKind,
+} from "../lib/api";
 import { useStore } from "../store";
 
 interface Props {
@@ -18,21 +25,48 @@ const SECTIONS = [
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
+const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
+  { value: "openrouter", label: "OpenRouter" },
+  { value: "openai", label: "OpenAI" },
+  { value: "azure", label: "Azure OpenAI" },
+  { value: "ollama", label: "Ollama" },
+  { value: "llama_cpp", label: "llama.cpp" },
+  { value: "custom", label: "自定义" },
+];
+
+function basePlaceholder(kind: ProviderKind): string {
+  switch (kind) {
+    case "openrouter":
+      return "https://openrouter.ai/api/v1";
+    case "openai":
+      return "https://api.openai.com/v1";
+    case "azure":
+      return "https://your-resource.openai.azure.com";
+    case "ollama":
+      return "http://localhost:11434";
+    case "llama_cpp":
+      return "http://127.0.0.1:8080";
+    default:
+      return "http://localhost:8000/v1";
+  }
+}
+
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const { models, selectedModel, setModel } = useStore();
   const [section, setSection] = useState<SectionId>("appearance");
   const [rules, setRules] = useState("");
   const [saved, setSaved] = useState(false);
-  const [apiKey, setApiKey] = useState("");
-  const [showKey, setShowKey] = useState(false);
-  const [keySaved, setKeySaved] = useState(false);
+  const [providers, setProvidersState] = useState<ProviderConfig[]>([]);
+  const [provSaved, setProvSaved] = useState(false);
+  const [provError, setProvError] = useState("");
+  const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     getGlobalRules()
       .then(setRules)
       .catch(() => {});
-    getApiConfig()
-      .then((c) => setApiKey(c.api_key))
+    getProviders()
+      .then(setProvidersState)
       .catch(() => {});
   }, []);
 
@@ -54,13 +88,48 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     }
   }
 
-  async function saveApiKey() {
+  function updateProvider(index: number, patch: Partial<ProviderConfig>) {
+    setProvidersState((list) =>
+      list.map((p, i) => (i === index ? { ...p, ...patch } : p)),
+    );
+  }
+
+  function addProvider() {
+    const n = providers.length + 1;
+    setProvidersState([
+      ...providers,
+      {
+        id: `custom${Date.now() % 1000000}`,
+        kind: "custom",
+        name: `自定义供应商 ${n}`,
+        base_url: basePlaceholder("custom"),
+        api_key: "",
+        headers: {},
+        deployment: null,
+        api_version: null,
+        enabled: true,
+      },
+    ]);
+  }
+
+  function removeProvider(id: string) {
+    if (providers.length <= 1) {
+      setProvError("至少保留一个模型供应商");
+      return;
+    }
+    setProvError("");
+    setProvidersState(providers.filter((p) => p.id !== id));
+  }
+
+  async function saveProviders() {
+    setProvError("");
     try {
-      await setApiConfig("openrouter", apiKey);
-      setKeySaved(true);
-      window.setTimeout(() => setKeySaved(false), 1500);
-    } catch {
-      /* 保存失败保持页面状态 */
+      await setProviders(providers);
+      setProvSaved(true);
+      // 配置变更可能影响模型列表与选中项，稍后重载界面以刷新
+      window.setTimeout(() => window.location.reload(), 600);
+    } catch (e) {
+      setProvError(typeof e === "string" ? e : "保存失败");
     }
   }
 
@@ -147,46 +216,179 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
               <section className="rounded-card border border-line p-6">
                 <h2 className="eyebrow">模型服务</h2>
                 <div className="mt-4 flex items-center justify-between">
-                  <span className="text-sm font-medium">提供商</span>
-                  <span className="rounded-full border border-line bg-surface px-3 py-1 text-sm text-subtle">
-                    OpenRouter
-                  </span>
-                </div>
-
-                <label htmlFor="api-key" className="mt-5 block text-sm font-medium">
-                  API Key
-                </label>
-                <p className="mt-1 text-xs text-subtle">
-                  密钥仅保存在本地数据库，也可通过环境变量 OPENROUTER_API_KEY 提供
-                </p>
-                <div className="relative mt-2">
-                  <input
-                    id="api-key"
-                    type={showKey ? "text" : "password"}
-                    value={apiKey}
-                    onChange={(e) => setApiKey(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") saveApiKey();
-                    }}
-                    placeholder="sk-or-…"
-                    className="w-full rounded-lg border border-line bg-surface px-3 py-3 pr-10 text-sm outline-none transition-colors placeholder:text-subtle focus:border-brand"
-                  />
+                  <span className="text-sm font-medium">模型供应商</span>
                   <button
                     type="button"
-                    onClick={() => setShowKey((v) => !v)}
-                    aria-label={showKey ? "隐藏密钥" : "显示密钥"}
-                    className="absolute right-2.5 top-1/2 -translate-y-1/2 text-subtle transition-colors hover:text-foreground"
+                    onClick={addProvider}
+                    className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-xs text-subtle transition-colors hover:text-foreground"
                   >
-                    {showKey ? <EyeOff size={15} /> : <Eye size={15} />}
+                    <Plus size={12} />
+                    添加供应商
                   </button>
                 </div>
+                <p className="mt-1 text-xs text-subtle">
+                  密钥仅保存在本地数据库；模型列表顺序即降级顺序
+                </p>
+
+                <div className="mt-3 space-y-3">
+                  {providers.map((p, i) => {
+                    const showKey = visibleKeys[p.id];
+                    return (
+                      <div
+                        key={p.id}
+                        className="rounded-lg border border-line bg-surface/60 p-4"
+                      >
+                        <div className="flex flex-wrap items-center gap-2">
+                          <select
+                            value={p.kind}
+                            onChange={(e) =>
+                              updateProvider(i, {
+                                kind: e.target.value as ProviderKind,
+                              })
+                            }
+                            aria-label="供应商类型"
+                            className="rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-subtle outline-none transition-colors focus:border-brand"
+                          >
+                            {KIND_OPTIONS.map((o) => (
+                              <option key={o.value} value={o.value}>
+                                {o.label}
+                              </option>
+                            ))}
+                          </select>
+                          <input
+                            value={p.name}
+                            onChange={(e) =>
+                              updateProvider(i, { name: e.target.value })
+                            }
+                            aria-label="供应商名称"
+                            className="min-w-0 flex-1 rounded-lg border border-line bg-surface px-2.5 py-1 text-sm outline-none transition-colors focus:border-brand"
+                          />
+                          <button
+                            type="button"
+                            role="switch"
+                            aria-checked={p.enabled}
+                            aria-label={p.enabled ? "禁用供应商" : "启用供应商"}
+                            onClick={() =>
+                              updateProvider(i, { enabled: !p.enabled })
+                            }
+                            className={`relative h-5 w-9 shrink-0 rounded-full transition-colors ${
+                              p.enabled ? "bg-brand" : "bg-line"
+                            }`}
+                          >
+                            <span
+                              className={`absolute top-0.5 h-4 w-4 rounded-full bg-white transition-all ${
+                                p.enabled ? "left-4" : "left-0.5"
+                              }`}
+                            />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => removeProvider(p.id)}
+                            aria-label="删除供应商"
+                            className="shrink-0 p-1 text-subtle transition-colors hover:text-danger"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
+
+                        <div className="mt-3 grid gap-3 sm:grid-cols-2">
+                          <div>
+                            <label className="block text-xs text-subtle">
+                              接口地址
+                            </label>
+                            <input
+                              value={p.base_url}
+                              onChange={(e) =>
+                                updateProvider(i, { base_url: e.target.value })
+                              }
+                              placeholder={basePlaceholder(p.kind)}
+                              className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                            />
+                          </div>
+                          <div>
+                            <label className="block text-xs text-subtle">
+                              API Key
+                            </label>
+                            <div className="relative mt-1">
+                              <input
+                                type={showKey ? "text" : "password"}
+                                value={p.api_key}
+                                onChange={(e) =>
+                                  updateProvider(i, { api_key: e.target.value })
+                                }
+                                placeholder={
+                                  p.kind === "ollama" || p.kind === "llama_cpp"
+                                    ? "本地服务通常无需密钥"
+                                    : "sk-…"
+                                }
+                                className="w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 pr-8 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                              />
+                              <button
+                                type="button"
+                                onClick={() =>
+                                  setVisibleKeys((s) => ({
+                                    ...s,
+                                    [p.id]: !s[p.id],
+                                  }))
+                                }
+                                aria-label={showKey ? "隐藏密钥" : "显示密钥"}
+                                className="absolute right-2 top-1/2 -translate-y-1/2 text-subtle transition-colors hover:text-foreground"
+                              >
+                                {showKey ? <EyeOff size={13} /> : <Eye size={13} />}
+                              </button>
+                            </div>
+                          </div>
+                          {p.kind === "azure" && (
+                            <>
+                              <div>
+                                <label className="block text-xs text-subtle">
+                                  Deployment
+                                </label>
+                                <input
+                                  value={p.deployment ?? ""}
+                                  onChange={(e) =>
+                                    updateProvider(i, {
+                                      deployment: e.target.value || null,
+                                    })
+                                  }
+                                  placeholder="gpt-4o"
+                                  className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                />
+                              </div>
+                              <div>
+                                <label className="block text-xs text-subtle">
+                                  API Version
+                                </label>
+                                <input
+                                  value={p.api_version ?? ""}
+                                  onChange={(e) =>
+                                    updateProvider(i, {
+                                      api_version: e.target.value || null,
+                                    })
+                                  }
+                                  placeholder="2024-06-01"
+                                  className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                />
+                              </div>
+                            </>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+
+                {provError && (
+                  <p className="mt-3 text-xs text-danger">{provError}</p>
+                )}
+
                 <div className="mt-4 flex justify-end">
                   <button
                     type="button"
-                    onClick={saveApiKey}
+                    onClick={saveProviders}
                     className="rounded-full bg-brand px-4 py-1.5 text-sm text-white transition-colors enabled:hover:bg-brand-strong"
                   >
-                    {keySaved ? "已保存" : "保存"}
+                    {provSaved ? "已保存" : "保存"}
                   </button>
                 </div>
 

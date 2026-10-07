@@ -86,3 +86,31 @@ export function setApiConfig(provider: string, apiKey: string): Promise<void> {
 export function removeWorkspace(path: string, sessionIds: string[]): Promise<void> {
   return invoke("remove_workspace", { path, sessionIds });
 }
+
+export type ProviderKind =
+  | "openrouter"
+  | "openai"
+  | "azure"
+  | "ollama"
+  | "llama_cpp"
+  | "custom";
+
+export interface ProviderConfig {
+  id: string;
+  kind: ProviderKind;
+  name: string;
+  base_url: string;
+  api_key: string;
+  headers: Record<string, unknown>;
+  deployment: string | null;
+  api_version: string | null;
+  enabled: boolean;
+}
+
+export function getProviders(): Promise<ProviderConfig[]> {
+  return invoke("get_providers");
+}
+
+export function setProviders(providers: ProviderConfig[]): Promise<void> {
+  return invoke("set_providers", { providers });
+}
