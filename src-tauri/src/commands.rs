@@ -9,8 +9,8 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::runner::{run_turn, TurnContext};
-use crate::api::config::{load_config, save_config};
-use crate::api::Router;
+use crate::api::config::{load_config, normalize, save_config};
+use crate::api::{ProviderConfig, Router};
 use crate::db;
 
 pub struct Session {
@@ -303,6 +303,49 @@ pub fn set_selected_model(state: State<'_, AppState>, id: String) -> Result<(), 
 pub struct ApiConfig {
     pub provider: String,
     pub api_key: String,
+}
+
+/// 返回全部供应商配置（设置页编辑用）。
+#[tauri::command]
+pub fn get_providers(state: State<'_, AppState>) -> Vec<ProviderConfig> {
+    state.router.config().providers
+}
+
+/// 校验并整体保存供应商列表，重建 Router 执行器。
+#[tauri::command]
+pub fn set_providers(
+    state: State<'_, AppState>,
+    providers: Vec<ProviderConfig>,
+) -> Result<(), String> {
+    if providers.is_empty() {
+        return Err("至少需要保留一个模型供应商".into());
+    }
+    let mut seen = std::collections::HashSet::new();
+    for p in &providers {
+        if p.id.trim().is_empty() || p.id.contains(':') || p.id.contains(char::is_whitespace) {
+            return Err(format!("供应商 ID 非法（不可为空/含冒号或空格）：{}", p.id));
+        }
+        if !seen.insert(p.id.clone()) {
+            return Err(format!("供应商 ID 重复：{}", p.id));
+        }
+        if p.name.trim().is_empty() {
+            return Err(format!("供应商名称不能为空：{}", p.id));
+        }
+        if p.base_url.trim().is_empty() {
+            return Err(format!("{} 的接口地址不能为空", p.name));
+        }
+        if p.kind == crate::api::ProviderKind::Azure
+            && p.deployment.as_deref().unwrap_or("").trim().is_empty()
+        {
+            return Err(format!("{} 需要填写 Azure Deployment 名", p.name));
+        }
+    }
+    let mut cfg = state.router.config();
+    cfg.providers = providers;
+    let cfg = normalize(cfg);
+    state.router.set_config(cfg.clone());
+    let db = state.db.lock().map_err(lock_err)?;
+    save_config(&db, &cfg)
 }
 
 #[tauri::command]

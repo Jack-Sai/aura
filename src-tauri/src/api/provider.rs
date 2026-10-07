@@ -121,15 +121,25 @@ pub trait ChatProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::api::OpenRouterProvider;
+    use crate::api::CompatProvider;
+
+    fn test_provider() -> CompatProvider {
+        CompatProvider::new(
+            "openrouter",
+            ProviderKind::OpenRouter,
+            "https://openrouter.ai/api/v1",
+            None,
+            Default::default(),
+        )
+    }
 
     fn assert_provider<P: ChatProvider>(p: &P) -> (String, ProviderKind, bool) {
         (p.id().to_string(), p.kind(), p.ready())
     }
 
     #[test]
-    fn openrouter_provider_implements_trait() {
-        let p = OpenRouterProvider::openrouter();
+    fn compat_provider_implements_trait() {
+        let p = test_provider();
         let (id, kind, ready) = assert_provider(&p);
         assert_eq!(id, "openrouter");
         assert_eq!(kind, ProviderKind::OpenRouter);
@@ -140,15 +150,46 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn default_list_models_is_empty_and_probe_reports_key_state() {
-        let p = OpenRouterProvider::openrouter();
-        assert!(p.list_models().await.unwrap().is_empty());
+    async fn default_list_models_and_probe_report_key_state() {
+        // 最小实现：list_models/probe 走 trait 默认（不发网络请求）
+        struct Minimal {
+            key: bool,
+        }
+        impl ChatProvider for Minimal {
+            fn id(&self) -> &str {
+                "minimal"
+            }
+            fn kind(&self) -> ProviderKind {
+                ProviderKind::Custom
+            }
+            fn ready(&self) -> bool {
+                self.key
+            }
+            fn stream<'a>(
+                &'a self,
+                _model: &'a str,
+                _messages: &'a [Value],
+            ) -> impl std::future::Future<Output = Result<ChatStream, ModelError>> + Send + 'a
+            {
+                async { unimplemented!("not used") }
+            }
+            fn complete<'a>(
+                &'a self,
+                _model: &'a str,
+                _messages: &'a [Value],
+            ) -> impl std::future::Future<Output = Result<String, ModelError>> + Send + 'a
+            {
+                async { unimplemented!("not used") }
+            }
+        }
 
+        let p = Minimal { key: false };
+        assert!(p.list_models().await.unwrap().is_empty());
         let status = p.probe().await.unwrap();
         assert!(!status.ok);
         assert!(status.message.contains("未配置"));
 
-        p.set_api_key(Some("sk-or".into()));
+        let p = Minimal { key: true };
         let status = p.probe().await.unwrap();
         assert!(status.ok);
         assert!(status.message.contains("已配置"));

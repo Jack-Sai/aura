@@ -23,6 +23,12 @@ pub struct ProviderConfig {
     /// 附加请求头（v0.2.6 自定义供应商）
     #[serde(default)]
     pub headers: serde_json::Map<String, serde_json::Value>,
+    /// Azure deployment 名（kind == azure 时使用）
+    #[serde(default)]
+    pub deployment: Option<String>,
+    /// Azure api-version（kind == azure 时使用）
+    #[serde(default)]
+    pub api_version: Option<String>,
     #[serde(default = "default_true")]
     pub enabled: bool,
 }
@@ -85,6 +91,8 @@ pub fn default_config() -> RouterConfig {
             base_url: "https://openrouter.ai/api/v1".to_string(),
             api_key: String::new(),
             headers: serde_json::Map::new(),
+            deployment: None,
+            api_version: None,
             enabled: true,
         }],
         models: MODELS
@@ -145,13 +153,25 @@ pub fn save_config(conn: &Connection, cfg: &RouterConfig) -> Result<(), String> 
     crate::db::set_setting(conn, CONFIG_KEY, &json).map_err(|e| e.to_string())
 }
 
-/// 配置不变量：过滤未知 provider 的模型、selected 缺失时回退首个模型。
-fn normalize(mut cfg: RouterConfig) -> RouterConfig {
+/// 配置不变量：过滤供应商已不存在的模型；selected 必须指向
+/// 当前可选（provider 与模型均启用）的条目，否则回退首个可选项。
+pub fn normalize(mut cfg: RouterConfig) -> RouterConfig {
     cfg.models
-        .retain(|m| cfg.providers.iter().any(|p| p.id == m.provider && p.enabled));
-    let keys: Vec<String> = cfg.models.iter().map(|m| m.key()).collect();
-    if !keys.contains(&cfg.selected) {
-        cfg.selected = keys
+        .retain(|m| cfg.providers.iter().any(|p| p.id == m.provider));
+    let selectable: Vec<String> = cfg
+        .models
+        .iter()
+        .filter(|m| {
+            m.enabled
+                && cfg
+                    .providers
+                    .iter()
+                    .any(|p| p.id == m.provider && p.enabled)
+        })
+        .map(|m| m.key())
+        .collect();
+    if !selectable.contains(&cfg.selected) {
+        cfg.selected = selectable
             .first()
             .cloned()
             .unwrap_or_else(|| model_key("openrouter", MODELS[0].id));
@@ -249,11 +269,14 @@ mod tests {
         assert_eq!(cfg.models.len(), 4);
         assert_eq!(cfg.selected, cfg.models[0].key());
 
-        // 禁用 provider 后其模型应被过滤
+        // 禁用 provider 后其模型保留（可再启用），selected 若已不可选则回退
         let mut cfg = default_config();
+        cfg.selected = cfg.models[2].key();
         cfg.providers[0].enabled = false;
         let cfg = normalize(cfg);
-        assert!(cfg.models.is_empty());
+        assert_eq!(cfg.models.len(), 4);
+        // 没有可选项时回退到出厂默认 key
+        assert_eq!(cfg.selected, model_key("openrouter", MODELS[0].id));
     }
 
     #[test]

@@ -1,21 +1,23 @@
-use std::sync::RwLock;
+use std::collections::HashMap;
+use std::sync::{Mutex, RwLock};
 
 use serde_json::Value;
 
-use super::client::{Fallback, OpenRouterProvider};
-use super::config::{RouterConfig, CONFIG_KEY};
+use super::client::Fallback;
+use super::compat::CompatProvider;
+use super::config::{ProviderConfig, RouterConfig, CONFIG_KEY};
 use super::error::ModelError;
 use super::provider::ProviderKind;
 use super::sse::ChatStream;
 
-/// 降级链路由中心（v0.2.0）：持有可热更新的配置与各 Provider 执行器，
-/// 统一提供带降级的流式/一次性请求。
+/// 降级链路由中心（v0.2.0 设计，v0.2.1 多执行器）：
+/// 持有可热更新的配置与各供应商执行器，统一提供带降级的流式/一次性请求。
 ///
-/// v0.2.0 仅接入 OpenRouter 执行器；链上其他供应商条目暂跳过，
-/// v0.2.1+ 按配置构建多执行器后自然生效。
+/// 执行器按 `ProviderConfig` 构建（OpenAI 兼容族），链上条目按其
+/// `provider` 字段路由到对应执行器；执行器缺失的条目跳过继续降级。
 pub struct Router {
     config: RwLock<RouterConfig>,
-    openrouter: OpenRouterProvider,
+    executors: Mutex<HashMap<String, CompatProvider>>,
 }
 
 /// 降级链上的一个候选条目（索引即会话 `model_idx` 语义）。
@@ -23,22 +25,45 @@ struct ChainEntry {
     idx: usize,
     provider: String,
     model_id: String,
+    #[allow(dead_code)]
     label: String,
+}
+
+fn build_executor(p: &ProviderConfig) -> CompatProvider {
+    let key = {
+        let k = p.api_key.trim();
+        if k.is_empty() {
+            None
+        } else {
+            Some(k.to_string())
+        }
+    };
+    match p.kind {
+        ProviderKind::Azure => CompatProvider::with_azure(
+            &p.id,
+            &p.base_url,
+            p.deployment.as_deref().unwrap_or_default(),
+            p.api_version.as_deref().unwrap_or("2024-02-16"),
+            key,
+        ),
+        _ => CompatProvider::new(&p.id, p.kind, &p.base_url, key, p.headers.clone()),
+    }
+}
+
+fn build_executors(cfg: &RouterConfig) -> HashMap<String, CompatProvider> {
+    cfg.providers
+        .iter()
+        .filter(|p| p.enabled)
+        .map(|p| (p.id.clone(), build_executor(p)))
+        .collect()
 }
 
 impl Router {
     pub fn new(config: RouterConfig) -> Self {
-        let openrouter = OpenRouterProvider::openrouter();
-        let key = config
-            .providers
-            .iter()
-            .find(|p| p.id == "openrouter")
-            .map(|p| p.api_key.trim().to_string())
-            .filter(|k| !k.is_empty());
-        openrouter.set_api_key(key);
+        let executors = build_executors(&config);
         Self {
             config: RwLock::new(config),
-            openrouter,
+            executors: Mutex::new(executors),
         }
     }
 
@@ -63,35 +88,37 @@ impl Router {
             })
     }
 
-    /// 更新指定供应商的 API Key（仅内存态，持久化由调用方负责）。
+    /// 更新指定供应商的 API Key（内存态，持久化由调用方负责）。
     pub fn set_provider_key(&self, id: &str, key: Option<String>) {
-        if let Ok(mut cfg) = self.config.write() {
+        let new_key = key.unwrap_or_default();
+        let snapshot = {
+            let Ok(mut cfg) = self.config.write() else {
+                return;
+            };
             if let Some(p) = cfg.providers.iter_mut().find(|p| p.id == id) {
-                p.api_key = key.unwrap_or_default();
+                p.api_key = new_key;
             }
-            let openrouter_key = cfg
-                .providers
-                .iter()
-                .find(|p| p.id == "openrouter")
-                .map(|p| p.api_key.trim().to_string())
-                .filter(|k| !k.is_empty());
-            drop(cfg);
-            self.openrouter.set_api_key(openrouter_key);
+            cfg.clone()
+        };
+        if let Ok(mut exec) = self.executors.lock() {
+            *exec = build_executors(&snapshot);
         }
     }
 
-    /// 整体替换配置（设置页保存提供商/模型列表后调用）。
+    /// 整体替换配置并重建执行器（设置页保存提供商列表后调用）。
     pub fn set_config(&self, cfg: RouterConfig) {
-        let openrouter_key = cfg
-            .providers
-            .iter()
-            .find(|p| p.id == "openrouter")
-            .map(|p| p.api_key.trim().to_string())
-            .filter(|k| !k.is_empty());
-        self.openrouter.set_api_key(openrouter_key);
+        let executors = build_executors(&cfg);
         if let Ok(mut guard) = self.config.write() {
             *guard = cfg;
         }
+        if let Ok(mut guard) = self.executors.lock() {
+            *guard = executors;
+        }
+    }
+
+    /// 取指定供应商执行器（共享 HTTP 连接池的克隆句柄）。
+    pub fn executor_for(&self, id: &str) -> Option<CompatProvider> {
+        self.executors.lock().ok()?.get(id).cloned()
     }
 
     /// 当前选中模型在 `config.models` 中的索引（会话 model_idx 语义）。
@@ -152,7 +179,7 @@ impl Router {
 
     async fn with_fallback<T, F, Fut>(&self, start_idx: usize, f: F) -> Result<Fallback<T>, ModelError>
     where
-        F: Fn(usize, String) -> Fut,
+        F: Fn(usize, String, String) -> Fut,
         Fut: std::future::Future<Output = Result<T, ModelError>>,
     {
         let chain = self.chain(start_idx);
@@ -161,26 +188,16 @@ impl Router {
                 "没有可用的模型（降级链为空）".into(),
             ));
         }
-        // v0.2.0：仅 OpenRouter 执行器，其余供应商条目暂不可执行
-        let runnable: Vec<&ChainEntry> = chain
-            .iter()
-            .filter(|e| e.provider == "openrouter")
-            .collect();
-        if runnable.is_empty() {
-            return Err(ModelError::Unsupported(
-                "当前版本仅接入 OpenRouter，请在设置中检查模型供应商".into(),
-            ));
-        }
         let start_clamped = start_idx.min(
             self.config
                 .read()
                 .map(|c| c.models.len().saturating_sub(1))
                 .unwrap_or(start_idx),
         );
-        let total = runnable.len();
+        let total = chain.len();
         let mut first_err: Option<ModelError> = None;
-        for (pos, entry) in runnable.iter().enumerate() {
-            match f(entry.idx, entry.model_id.clone()).await {
+        for (pos, entry) in chain.iter().enumerate() {
+            match f(entry.idx, entry.provider.clone(), entry.model_id.clone()).await {
                 Ok(value) => {
                     let notice = if entry.idx != start_clamped {
                         let reason = match &first_err {
@@ -216,8 +233,14 @@ impl Router {
         start_idx: usize,
         messages: &[Value],
     ) -> Result<Fallback<ChatStream>, ModelError> {
-        self.with_fallback(start_idx, move |_idx, model_id| async move {
-            self.openrouter.stream(&model_id, messages).await
+        self.with_fallback(start_idx, move |_idx, provider, model_id| {
+            let exec = self.executor_for(&provider);
+            async move {
+                match exec {
+                    Some(exec) => exec.stream(&model_id, messages).await,
+                    None => Err(ModelError::ProviderMissing(provider)),
+                }
+            }
         })
         .await
     }
@@ -227,8 +250,14 @@ impl Router {
         start_idx: usize,
         messages: &[Value],
     ) -> Result<Fallback<String>, ModelError> {
-        self.with_fallback(start_idx, move |_idx, model_id| async move {
-            self.openrouter.complete(&model_id, messages).await
+        self.with_fallback(start_idx, move |_idx, provider, model_id| {
+            let exec = self.executor_for(&provider);
+            async move {
+                match exec {
+                    Some(exec) => exec.complete(&model_id, messages).await,
+                    None => Err(ModelError::ProviderMissing(provider)),
+                }
+            }
         })
         .await
     }
@@ -243,10 +272,24 @@ impl Router {
 mod tests {
     use super::*;
     use crate::api::config::{default_config, model_key, ModelConfig, ProviderConfig};
-    use crate::api::provider::ProviderKind;
+    use crate::api::provider::{ChatProvider, ProviderKind};
 
     fn test_router() -> Router {
         Router::new(default_config())
+    }
+
+    fn ollama_provider() -> ProviderConfig {
+        ProviderConfig {
+            id: "ollama".into(),
+            kind: ProviderKind::Ollama,
+            name: "Ollama".into(),
+            base_url: "http://localhost:11434".into(),
+            api_key: String::new(),
+            headers: serde_json::Map::new(),
+            deployment: None,
+            api_version: None,
+            enabled: true,
+        }
     }
 
     #[tokio::test]
@@ -256,7 +299,7 @@ mod tests {
         cfg.models[1].enabled = false;
         let router = Router::new(cfg);
         let err = router
-            .with_fallback(0, |idx, _model_id| async move {
+            .with_fallback(0, |idx, _pid, _mid| async move {
                 if idx == 0 {
                     Err(ModelError::RateLimited)
                 } else {
@@ -275,7 +318,7 @@ mod tests {
         let router = test_router();
         // 越界的 start_idx 必须收敛，不得 panic
         let out = router
-            .with_fallback(99, |idx, _model_id| async move { Ok(idx) })
+            .with_fallback(99, |idx, _pid, _mid| async move { Ok(idx) })
             .await
             .unwrap();
         assert_eq!(out.model_idx, 3);
@@ -286,7 +329,7 @@ mod tests {
     async fn fallback_auth_error_stops_immediately() {
         let router = test_router();
         let err = router
-            .with_fallback(0, |_idx, _model_id| async {
+            .with_fallback(0, |_idx, _pid, _mid| async {
                 Err::<(), _>(ModelError::Auth("bad".into()))
             })
             .await
@@ -295,7 +338,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn fallback_skips_foreign_provider_entries() {
+    async fn fallback_covers_multi_provider_chain() {
         let mut cfg = default_config();
         cfg.models.push(ModelConfig {
             provider: "ollama".into(),
@@ -305,23 +348,64 @@ mod tests {
             enabled: true,
             tags: vec![],
         });
-        cfg.providers.push(ProviderConfig {
-            id: "ollama".into(),
-            kind: ProviderKind::Ollama,
-            name: "Ollama".into(),
-            base_url: "http://localhost:11434".into(),
-            api_key: String::new(),
-            headers: serde_json::Map::new(),
+        cfg.providers.push(ollama_provider());
+        let router = Router::new(cfg);
+        // 起点即 ollama 条目：多执行器下它同样在降级链中
+        let out = router
+            .with_fallback(4, |idx, _pid, _mid| async move { Ok(idx) })
+            .await
+            .unwrap();
+        assert_eq!(out.model_idx, 4);
+        assert!(out.notice.is_none());
+    }
+
+    #[tokio::test]
+    async fn missing_executor_skips_to_next_provider() {
+        let mut cfg = default_config();
+        // openrouter 与 ollama 各一模型，openrouter provider 被禁用
+        // → 执行器不存在，链上 openrouter 条目报 ProviderMissing 并继续
+        cfg.models.push(ModelConfig {
+            provider: "ollama".into(),
+            id: "qwen3:0.6b".into(),
+            label: "Qwen3-0.6b".into(),
+            context_limit: 32768,
             enabled: true,
+            tags: vec![],
         });
-        // 起点即 ollama 条目：v0.2.0 无本地执行器 → 该条目被跳过，
-        // 但链上没有 openrouter 条目（起点在末尾）→ Unsupported
+        cfg.providers.push(ollama_provider());
+        cfg.providers[0].enabled = false;
         let router = Router::new(cfg);
         let err = router
-            .with_fallback(4, |_idx, _model_id| async { Ok(()) })
+            .with_fallback(0, |idx, pid, _mid| async move {
+                if pid == "openrouter" {
+                    Err(ModelError::ProviderMissing(pid))
+                } else {
+                    Ok(idx)
+                }
+            })
             .await
-            .unwrap_err();
-        assert!(matches!(err, ModelError::Unsupported(_)));
+            .unwrap();
+        // openrouter 条目缺失执行器 → 跳过 → ollama 条目成功
+        assert_eq!(err.model_idx, 4);
+        assert!(err.notice.is_some());
+    }
+
+    #[test]
+    fn executors_built_from_enabled_providers() {
+        let mut cfg = default_config();
+        cfg.providers.push(ollama_provider());
+        let router = Router::new(cfg);
+        assert!(router.executor_for("openrouter").is_some());
+        let ollama = router.executor_for("ollama").expect("ollama 执行器");
+        assert_eq!(ollama.kind(), ProviderKind::Ollama);
+        assert!(router.executor_for("ghost").is_none());
+
+        // 禁用后重建即消失
+        let mut cfg = router.config();
+        cfg.providers[1].enabled = false;
+        router.set_config(cfg);
+        assert!(router.executor_for("ollama").is_none());
+        assert!(router.executor_for("openrouter").is_some());
     }
 
     #[test]
@@ -331,25 +415,16 @@ mod tests {
 
         router.set_provider_key("openrouter", Some("sk-test".into()));
         assert!(router.has_credentials());
-        assert_eq!(
-            router.config().providers[0].api_key,
-            "sk-test"
-        );
+        assert_eq!(router.config().providers[0].api_key, "sk-test");
+        assert!(router.executor_for("openrouter").unwrap().has_api_key());
 
         router.set_provider_key("openrouter", None);
         assert!(!router.has_credentials());
+        assert!(!router.executor_for("openrouter").unwrap().has_api_key());
 
         // 本地供应商无需 key
         let mut cfg = default_config();
-        cfg.providers.push(ProviderConfig {
-            id: "ollama".into(),
-            kind: ProviderKind::Ollama,
-            name: "Ollama".into(),
-            base_url: "http://localhost:11434".into(),
-            api_key: String::new(),
-            headers: serde_json::Map::new(),
-            enabled: true,
-        });
+        cfg.providers.push(ollama_provider());
         let router = Router::new(cfg);
         assert!(router.has_credentials());
     }

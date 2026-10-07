@@ -24,6 +24,8 @@ pub enum ModelError {
     LocalUnavailable(String),
     /// 当前 Provider 不支持该能力
     Unsupported(String),
+    /// 链上的供应商未启用/执行器缺失（跳过并继续降级）
+    ProviderMissing(String),
 }
 
 /// 兼容旧代码的类型别名，后续迁移完成后移除。
@@ -42,6 +44,7 @@ impl std::fmt::Display for ModelError {
             ModelError::BadResponse(msg) => write!(f, "响应格式异常：{}", msg),
             ModelError::LocalUnavailable(msg) => write!(f, "本地模型服务不可用：{}", msg),
             ModelError::Unsupported(msg) => write!(f, "当前服务不支持：{}", msg),
+            ModelError::ProviderMissing(msg) => write!(f, "模型供应商不可用：{}", msg),
         }
     }
 }
@@ -59,6 +62,7 @@ impl ModelError {
                 | ModelError::Network(_)
                 | ModelError::ContextOverflow
                 | ModelError::LocalUnavailable(_)
+                | ModelError::ProviderMissing(_)
         )
     }
 
@@ -171,6 +175,7 @@ mod tests {
         assert!(ModelError::Network("x".into()).is_retriable());
         assert!(ModelError::ContextOverflow.is_retriable());
         assert!(ModelError::LocalUnavailable("refused".into()).is_retriable());
+        assert!(ModelError::ProviderMissing("ollama".into()).is_retriable());
 
         assert!(!ModelError::Auth("bad".into()).is_retriable());
         assert!(!ModelError::InvalidRequest("x".into()).is_retriable());
