@@ -25,8 +25,10 @@ pub fn history_tokens(messages: &[Value]) -> usize {
     messages.iter().map(message_tokens).sum()
 }
 
-pub fn needs_compression(messages: &[Value], context_limit: usize) -> bool {
-    history_tokens(messages) as f64 >= context_limit as f64 * COMPRESSION_THRESHOLD
+/// 判断是否需要压缩。`extra_tokens` 为随请求一起发送但不在 history 中的
+/// 开销（system prompt、协议说明等），必须计入以免真实用量超出阈值。
+pub fn needs_compression(messages: &[Value], context_limit: usize, extra_tokens: usize) -> bool {
+    extra_tokens + history_tokens(messages) >= (context_limit as f64 * COMPRESSION_THRESHOLD) as usize
 }
 
 fn split_for_compression(messages: &[Value], context_limit: usize) -> Option<(&[Value], &[Value])> {
@@ -52,6 +54,46 @@ fn split_for_compression(messages: &[Value], context_limit: usize) -> Option<(&[
         return None;
     }
     Some((old, &messages[keep_start..]))
+}
+
+/// 本地兜底截断：当模型压缩摘要不可用（网络/限流）时，从最旧的
+/// 非 system 消息开始丢弃，直到总量降到阈值以下。始终保留 system
+/// 与至少最近一条消息，防止 Token 溢出报错。
+pub fn local_trim(messages: &[Value], context_limit: usize, extra_tokens: usize) -> Vec<Value> {
+    if messages.len() < 2 {
+        return messages.to_vec();
+    }
+    let has_system = messages
+        .first()
+        .and_then(|m| m.get("role"))
+        .and_then(|r| r.as_str())
+        == Some("system");
+    let body_start = usize::from(has_system);
+    let system_tokens = if has_system {
+        message_tokens(&messages[0])
+    } else {
+        0
+    };
+    let budget = (context_limit as f64 * COMPRESSION_THRESHOLD) as usize;
+
+    let mut keep_from = body_start;
+    loop {
+        let tail: usize = messages[keep_from..].iter().map(message_tokens).sum();
+        if extra_tokens + system_tokens + tail < budget {
+            break;
+        }
+        if keep_from + 1 >= messages.len() {
+            break;
+        }
+        keep_from += 1;
+    }
+
+    let mut out = Vec::with_capacity(messages.len() - keep_from + 1);
+    if has_system {
+        out.push(messages[0].clone());
+    }
+    out.extend(messages[keep_from..].iter().cloned());
+    out
 }
 
 pub async fn compress(
@@ -113,9 +155,60 @@ mod tests {
     #[test]
     fn compression_triggers_at_85_percent() {
         let messages = vec![msg("system", &"x".repeat(1000))];
-        assert!(!needs_compression(&messages, 2000));
+        assert!(!needs_compression(&messages, 2000, 0));
         let messages = vec![msg("system", &"x".repeat(6800))];
-        assert!(needs_compression(&messages, 2000));
+        assert!(needs_compression(&messages, 2000, 0));
+    }
+
+    #[test]
+    fn needs_compression_counts_extra_tokens() {
+        // history 本身低于阈值（约 5000），但加上 system prompt 后越线
+        let messages = vec![msg("user", &"x".repeat(20000))];
+        assert!(!needs_compression(&messages, 8000, 0));
+        assert!(needs_compression(&messages, 8000, 1800));
+    }
+
+    #[test]
+    fn local_trim_drops_oldest_keeps_system_and_recent() {
+        let mut messages = vec![msg("system", "sys")];
+        for i in 0..20 {
+            messages.push(msg("user", &format!("{}{}", "内容".repeat(50), i)));
+        }
+        let limit = 2000;
+        let before = history_tokens(&messages);
+        assert!(needs_compression(&messages, limit, 0), "before={}", before);
+
+        let out = local_trim(&messages, limit, 0);
+        assert_eq!(out[0]["role"], "system", "必须保留 system");
+        assert_eq!(
+            out[out.len() - 1]["content"],
+            messages[messages.len() - 1]["content"],
+            "必须保留最近一条"
+        );
+        assert!(out.len() < messages.len(), "应丢弃部分旧消息");
+        assert!(
+            history_tokens(&out) < (limit as f64 * COMPRESSION_THRESHOLD) as usize,
+            "trim 后应低于阈值"
+        );
+    }
+
+    #[test]
+    fn local_trim_noop_when_under_budget() {
+        let messages = vec![msg("system", "sys"), msg("user", "hi"), msg("assistant", "yo")];
+        let out = local_trim(&messages, 100000, 0);
+        assert_eq!(out.len(), messages.len());
+    }
+
+    #[test]
+    fn local_trim_keeps_last_message_even_if_huge() {
+        let mut messages = vec![msg("system", "sys")];
+        for i in 0..5 {
+            messages.push(msg("user", &format!("m{}", i)));
+        }
+        messages.push(msg("assistant", &"巨".repeat(50000)));
+        let out = local_trim(&messages, 2000, 0);
+        assert_eq!(out[0]["role"], "system");
+        assert_eq!(out[out.len() - 1]["role"], "assistant", "极端情况下仍保留最后一条");
     }
 
     #[test]

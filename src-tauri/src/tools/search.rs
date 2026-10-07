@@ -142,6 +142,10 @@ fn collect_hits(root_c: &Path, terms: &[String]) -> Vec<Hit> {
             let Ok(ft) = entry.file_type() else {
                 continue;
             };
+            // 跳过符号链接/junction，防止通过链接把工作区外内容带入搜索结果
+            if ft.is_symlink() {
+                continue;
+            }
             if ft.is_dir() {
                 if !SKIP_DIRS.contains(&name.as_str()) && !name.starts_with('.') {
                     queue.push(path);
@@ -206,5 +210,38 @@ mod tests {
 
         assert!(search_workspace(&root, &json!({})).is_err());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn search_skips_symlink_files() {
+        use std::os::windows::fs::symlink_file;
+        let base = std::env::temp_dir().join("aura_search_symlink");
+        let _ = fs::remove_dir_all(&base);
+        let root = base.join("ws");
+        let outside = base.join("out");
+        fs::create_dir_all(&root).unwrap();
+        fs::create_dir_all(&outside).unwrap();
+        fs::write(root.join("real.txt"), "needle_real content").unwrap();
+        fs::write(outside.join("secret.txt"), "secret_needle content").unwrap();
+
+        match symlink_file(outside.join("secret.txt"), root.join("link.txt")) {
+            Ok(()) => {
+                let out =
+                    search_workspace(&root, &json!({ "query": "secret_needle" })).unwrap();
+                assert!(
+                    !out.result.contains("secret_needle"),
+                    "符号链接指向沙盒外的内容必须被跳过: {}",
+                    out.result
+                );
+            }
+            Err(e) => {
+                eprintln!("skip symlink assertion (需要开发者模式或管理员权限): {}", e);
+            }
+        }
+
+        let out = search_workspace(&root, &json!({ "query": "needle_real" })).unwrap();
+        assert!(out.result.contains("real.txt"), "正常文件必须可搜: {}", out.result);
+
+        let _ = fs::remove_dir_all(&base);
     }
 }

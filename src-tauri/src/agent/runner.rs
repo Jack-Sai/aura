@@ -8,7 +8,7 @@ use tauri::{AppHandle, Emitter};
 
 use crate::api::{MODELS, OpenRouterClient};
 use crate::tools;
-use super::context::{compress, needs_compression};
+use super::context::{compress, estimate_tokens, local_trim, needs_compression};
 use super::parser::{Event, Finish, Parser};
 use super::prompt::build_system_prompt;
 
@@ -137,14 +137,36 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         }
 
         let limit = MODELS[*ctx.model_idx].context_limit;
-        if needs_compression(ctx.history, limit) {
-            if let Some(new) = compress(ctx.client, *ctx.model_idx, ctx.history, limit).await {
-                *ctx.history = new;
-            }
-        }
-
         let ws_display = ctx.workspace.display().to_string().replace('\\', "/");
         let system = build_system_prompt(&ws_display, ctx.global_rules);
+        let system_tokens = estimate_tokens(&system) + 4;
+        if needs_compression(ctx.history, limit, system_tokens) {
+            match compress(ctx.client, *ctx.model_idx, ctx.history, limit).await {
+                Some(new) => {
+                    *ctx.history = new;
+                }
+                None => {
+                    // 摘要请求失败（网络/限流）时本地兜底截断，防止 Token 溢出
+                    let trimmed = local_trim(ctx.history, limit, system_tokens);
+                    if trimmed.len() < ctx.history.len() {
+                        emit_text(
+                            ctx.app,
+                            ctx.session_id,
+                            EV_NOTICE,
+                            "上下文接近上限，摘要生成失败，已截断较早的消息",
+                        );
+                        *ctx.history = trimmed;
+                    }
+                }
+            }
+            // 摘要或截断后若仍超阈值（单条消息过大），再次本地截断保证不溢出
+            if needs_compression(ctx.history, limit, system_tokens) {
+                let trimmed = local_trim(ctx.history, limit, system_tokens);
+                if trimmed.len() < ctx.history.len() {
+                    *ctx.history = trimmed;
+                }
+            }
+        }
         let mut messages = Vec::with_capacity(ctx.history.len() + 1);
         messages.push(json!({ "role": "system", "content": system }));
         messages.extend(ctx.history.iter().cloned());

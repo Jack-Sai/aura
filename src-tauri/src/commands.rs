@@ -9,7 +9,7 @@ use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::runner::{run_turn, TurnContext};
-use crate::api::{OpenRouterClient, MODELS};
+use crate::api::{OpenRouterProvider, MODELS};
 use crate::db;
 
 pub struct Session {
@@ -27,7 +27,7 @@ impl Session {
 }
 
 pub struct AppState {
-    pub client: OpenRouterClient,
+    pub client: OpenRouterProvider,
     pub sessions: AsyncMutex<HashMap<String, Session>>,
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
@@ -87,8 +87,10 @@ impl AppState {
             .filter(|k| !k.trim().is_empty())
             .map(|k| k.trim().to_string())
             .or(env_api_key);
+        let client = OpenRouterProvider::openrouter();
+        client.set_api_key(api_key);
         Self {
-            client: OpenRouterClient::new(api_key),
+            client,
             sessions: AsyncMutex::new(HashMap::new()),
             workspace: Mutex::new(workspace),
             global_rules: Mutex::new(global_rules),
