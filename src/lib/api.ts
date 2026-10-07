@@ -114,3 +114,19 @@ export function getProviders(): Promise<ProviderConfig[]> {
 export function setProviders(providers: ProviderConfig[]): Promise<void> {
   return invoke("set_providers", { providers });
 }
+
+export interface ProviderStatus {
+  id: string;
+  ok: boolean;
+  latency_ms: number;
+  message: string;
+}
+
+export function getProviderStatuses(): Promise<ProviderStatus[]> {
+  return invoke("get_provider_statuses");
+}
+
+/** 拉取供应商远端模型并合并进配置，返回新增模型数。 */
+export function refreshProviderModels(provider: string): Promise<number> {
+  return invoke("refresh_provider_models", { provider });
+}

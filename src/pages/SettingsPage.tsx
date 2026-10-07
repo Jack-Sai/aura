@@ -1,13 +1,16 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
-import { ArrowLeft, Check, Eye, EyeOff, Plus, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import {
   getGlobalRules,
+  getProviderStatuses,
   getProviders,
+  refreshProviderModels,
   setGlobalRules,
   setProviders,
   type ProviderConfig,
   type ProviderKind,
+  type ProviderStatus,
 } from "../lib/api";
 import { useStore } from "../store";
 
@@ -52,7 +55,7 @@ function basePlaceholder(kind: ProviderKind): string {
 }
 
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
-  const { models, selectedModel, setModel } = useStore();
+  const { models, selectedModel, setModel, refreshModels } = useStore();
   const [section, setSection] = useState<SectionId>("appearance");
   const [rules, setRules] = useState("");
   const [saved, setSaved] = useState(false);
@@ -60,6 +63,9 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const [provSaved, setProvSaved] = useState(false);
   const [provError, setProvError] = useState("");
   const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
+  const [statuses, setStatuses] = useState<Record<string, ProviderStatus>>({});
+  const [probeBusy, setProbeBusy] = useState(false);
+  const [refreshNote, setRefreshNote] = useState<Record<string, string>>({});
 
   useEffect(() => {
     getGlobalRules()
@@ -69,6 +75,51 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
       .then(setProvidersState)
       .catch(() => {});
   }, []);
+
+  useEffect(() => {
+    if (section !== "model") return;
+    let alive = true;
+    setProbeBusy(true);
+    getProviderStatuses()
+      .then((list) => {
+        if (!alive) return;
+        setStatuses(Object.fromEntries(list.map((s) => [s.id, s])));
+      })
+      .catch(() => {})
+      .finally(() => alive && setProbeBusy(false));
+    return () => {
+      alive = false;
+    };
+  }, [section]);
+
+  async function probeNow() {
+    setProbeBusy(true);
+    try {
+      const list = await getProviderStatuses();
+      setStatuses(Object.fromEntries(list.map((s) => [s.id, s])));
+    } catch {
+      /* 探测失败保持原状态 */
+    } finally {
+      setProbeBusy(false);
+    }
+  }
+
+  async function refreshModelsOf(id: string) {
+    setRefreshNote((n) => ({ ...n, [id]: "刷新中…" }));
+    try {
+      const added = await refreshProviderModels(id);
+      setRefreshNote((n) => ({
+        ...n,
+        [id]: added > 0 ? `新增 ${added} 个模型` : "无新增模型",
+      }));
+      if (added > 0) await refreshModels();
+    } catch (e) {
+      setRefreshNote((n) => ({
+        ...n,
+        [id]: typeof e === "string" ? e : "刷新失败",
+      }));
+    }
+  }
 
   useEffect(() => {
     function onKey(e: globalThis.KeyboardEvent) {
@@ -216,7 +267,21 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
               <section className="rounded-card border border-line p-6">
                 <h2 className="eyebrow">模型服务</h2>
                 <div className="mt-4 flex items-center justify-between">
-                  <span className="text-sm font-medium">模型供应商</span>
+                  <span className="flex items-center gap-2 text-sm font-medium">
+                    模型供应商
+                    <button
+                      type="button"
+                      onClick={probeNow}
+                      disabled={probeBusy}
+                      className="flex items-center gap-1.5 rounded-full border border-line px-3 py-1 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
+                    >
+                      <RefreshCw
+                        size={12}
+                        className={probeBusy ? "animate-spin" : ""}
+                      />
+                      {probeBusy ? "检测中…" : "检测连通性"}
+                    </button>
+                  </span>
                   <button
                     type="button"
                     onClick={addProvider}
@@ -233,12 +298,30 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                 <div className="mt-3 space-y-3">
                   {providers.map((p, i) => {
                     const showKey = visibleKeys[p.id];
+                    const st = statuses[p.id];
+                    const dot = st?.ok
+                      ? "bg-success"
+                      : st
+                        ? "bg-danger"
+                        : "bg-line";
                     return (
                       <div
                         key={p.id}
                         className="rounded-lg border border-line bg-surface/60 p-4"
                       >
                         <div className="flex flex-wrap items-center gap-2">
+                          <span
+                            title={
+                              st
+                                ? `${st.message}${
+                                    st.latency_ms > 0
+                                      ? `（${st.latency_ms}ms）`
+                                      : ""
+                                  }`
+                                : "尚未检测"
+                            }
+                            className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`}
+                          />
                           <select
                             value={p.kind}
                             onChange={(e) =>
@@ -283,6 +366,14 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                           </button>
                           <button
                             type="button"
+                            onClick={() => refreshModelsOf(p.id)}
+                            aria-label="刷新模型列表"
+                            className="shrink-0 p-1 text-subtle transition-colors hover:text-foreground"
+                          >
+                            <RefreshCw size={14} />
+                          </button>
+                          <button
+                            type="button"
                             onClick={() => removeProvider(p.id)}
                             aria-label="删除供应商"
                             className="shrink-0 p-1 text-subtle transition-colors hover:text-danger"
@@ -290,6 +381,11 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                             <Trash2 size={14} />
                           </button>
                         </div>
+                        {refreshNote[p.id] && (
+                          <p className="mt-2 text-xs text-subtle">
+                            {refreshNote[p.id]}
+                          </p>
+                        )}
 
                         <div className="mt-3 grid gap-3 sm:grid-cols-2">
                           <div>

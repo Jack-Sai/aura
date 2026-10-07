@@ -71,6 +71,7 @@ interface StoreValue extends State {
   deleteSession: (id: string) => void;
   removeWorkspace: (path: string) => Promise<void>;
   setModel: (id: string) => Promise<void>;
+  refreshModels: () => Promise<void>;
 }
 
 const StoreContext = createContext<StoreValue | null>(null);
@@ -317,6 +318,18 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const refreshModels = useCallback(async () => {
+    try {
+      const [models, selectedModel] = await Promise.all([
+        getModels(),
+        getSelectedModel(),
+      ]);
+      setState((s) => ({ ...s, models, selectedModel }));
+    } catch {
+      /* 刷新失败保持现有列表 */
+    }
+  }, []);
+
   const sendMessage = useCallback(
     async (text: string) => {
       if (state.busy) return;
@@ -494,6 +507,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       removeWorkspace,
       setModel,
+      refreshModels,
     }),
     [
       state,
@@ -510,6 +524,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       removeWorkspace,
       setModel,
+      refreshModels,
     ],
   );
 
