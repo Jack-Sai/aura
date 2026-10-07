@@ -13,6 +13,24 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
+// 右键目标保留原生菜单：可编辑区域（复制粘贴/输入建议），
+// 或页面存在选中文本且右键点在选区内（复制/搜索）。其余一律由
+// 捕获阶段 contextmenu 监听拦截，避免 WebView 原生页面菜单漏出。
+function shouldUseNativeMenu(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  if (target.closest("input, textarea, [contenteditable]")) return true;
+  const selection = window.getSelection();
+  if (selection && !selection.isCollapsed && selection.rangeCount > 0) {
+    try {
+      const range = selection.getRangeAt(0);
+      if (range.intersectsNode(target)) return true;
+    } catch {
+      /* 节点不在文档树等边缘情况，按非原生处理 */
+    }
+  }
+  return false;
+}
+
 function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void }) {
   const {
     busy,
@@ -33,24 +51,30 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
   const scrollRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (view !== "chat") return;
     const el = scrollRef.current;
-    if (!el) return;
+    if (view !== "chat" || !el) return;
     const nearBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 140;
     if (nearBottom) {
       el.scrollTop = el.scrollHeight;
     }
   }, [activeSession?.messages, view]);
 
-  function onContextMenu(e: ReactMouseEvent) {
-    const target = e.target as HTMLElement;
-    if (target.closest("input, textarea, [contenteditable]")) return;
-    const selection = window.getSelection();
-    if (selection && !selection.isCollapsed) return;
+  useEffect(() => {
+    const onContextMenu = (e: MouseEvent) => {
+      if (shouldUseNativeMenu(e.target)) return;
+      e.preventDefault();
+    };
+    window.addEventListener("contextmenu", onContextMenu, true);
+    return () => window.removeEventListener("contextmenu", onContextMenu, true);
+  }, []);
 
+  function onContextMenu(e: ReactMouseEvent) {
+    if (shouldUseNativeMenu(e.target)) return;
+    e.preventDefault();
+
+    const target = e.target as HTMLElement;
     const sessionEl = target.closest<HTMLElement>("[data-ctx-session]");
     if (sessionEl) {
-      e.preventDefault();
       const id = sessionEl.dataset.ctxSession ?? "";
       setMenu({
         x: e.clientX,
@@ -75,13 +99,9 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
         });
       }
       if (items.length > 0) {
-        e.preventDefault();
         setMenu({ x: e.clientX, y: e.clientY, items });
       }
-      return;
     }
-
-    e.preventDefault();
   }
 
   return (
