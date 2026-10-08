@@ -1,13 +1,12 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, Check, Eye, EyeOff, Plus, RefreshCw, Trash2 } from "lucide-react";
+import { ArrowLeft, Check, Eye, EyeOff, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import {
   getGlobalRules,
   getProviderStatuses,
   getProviders,
   pullOllamaModel,
-  refreshProviderModels,
   setGlobalRules,
   setProviders,
   type ProviderConfig,
@@ -104,12 +103,13 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const [visibleKeys, setVisibleKeys] = useState<Record<string, boolean>>({});
   const [statuses, setStatuses] = useState<Record<string, ProviderStatus>>({});
   const [probeBusy, setProbeBusy] = useState(false);
-  const [refreshNote, setRefreshNote] = useState<Record<string, string>>({});
   const [pullInputs, setPullInputs] = useState<Record<string, string>>({});
   const [pulls, setPulls] = useState<
     Record<string, { status: string; percent: number | null; failed?: boolean }>
   >({});
   const [pulling, setPulling] = useState<Record<string, boolean>>({});
+  const [testingConn, setTestingConn] = useState<Record<string, boolean>>({});
+  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
 
   useEffect(() => {
     const un = listen<{
@@ -165,20 +165,25 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     }
   }
 
-  async function refreshModelsOf(id: string) {
-    setRefreshNote((n) => ({ ...n, [id]: "刷新中…" }));
+  async function testConnection(id: string) {
+    setTestingConn((t) => ({ ...t, [id]: true }));
+    setTestResults((r) => ({ ...r, [id]: { ok: false, message: "测试中..." } }));
     try {
-      const added = await refreshProviderModels(id);
-      setRefreshNote((n) => ({
-        ...n,
-        [id]: added > 0 ? `新增 ${added} 个模型` : "无新增模型",
+      const list = await getProviderStatuses();
+      const st = list.find((s) => s.id === id);
+      setTestResults((r) => ({
+        ...r,
+        [id]: st
+          ? { ok: st.ok, message: st.message + (st.latency_ms > 0 ? ` (${st.latency_ms}ms)` : "") }
+          : { ok: false, message: "未找到供应商" },
       }));
-      if (added > 0) await refreshModels();
     } catch (e) {
-      setRefreshNote((n) => ({
-        ...n,
-        [id]: typeof e === "string" ? e : "刷新失败",
+      setTestResults((r) => ({
+        ...r,
+        [id]: { ok: false, message: typeof e === "string" ? e : "测试失败" },
       }));
+    } finally {
+      setTestingConn((t) => ({ ...t, [id]: false }));
     }
   }
 
@@ -456,11 +461,12 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                           </button>
                           <button
                             type="button"
-                            onClick={() => refreshModelsOf(p.id)}
-                            aria-label="刷新模型列表"
-                            className="shrink-0 p-1 text-subtle transition-colors hover:text-foreground"
+                            onClick={() => testConnection(p.id)}
+                            disabled={testingConn[p.id]}
+                            aria-label="测试连接"
+                            className="shrink-0 p-1 text-subtle transition-colors hover:text-foreground disabled:opacity-60"
                           >
-                            <RefreshCw size={14} />
+                            <Zap size={14} className={testingConn[p.id] ? "animate-spin" : ""} />
                           </button>
                           <button
                             type="button"
@@ -471,9 +477,9 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                             <Trash2 size={14} />
                           </button>
                         </div>
-                        {refreshNote[p.id] && (
-                          <p className="mt-2 text-xs text-subtle">
-                            {refreshNote[p.id]}
+                        {testResults[p.id] && (
+                          <p className="mt-2 text-xs" style={{ color: testResults[p.id].ok ? "var(--color-success)" : "var(--color-danger)" }}>
+                            {testResults[p.id].message}
                           </p>
                         )}
 
@@ -629,6 +635,60 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                 />
                               </div>
                             </>
+                          )}
+                          {p.kind === "custom" && (
+                            <div className="sm:col-span-2">
+                              <label className="block text-xs text-subtle mb-1">自定义请求头</label>
+                              <div className="space-y-1.5">
+                                {Object.entries(p.headers).map(([hk, hv]) => (
+                                  <div key={hk} className="flex items-center gap-1.5">
+                                    <input
+                                      value={hk}
+                                      onChange={(e) => {
+                                        const newHeaders = { ...p.headers };
+                                        delete newHeaders[hk];
+                                        newHeaders[e.target.value] = hv;
+                                        updateProvider(i, { headers: newHeaders });
+                                      }}
+                                      placeholder="Header 名"
+                                      className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    <input
+                                      value={String(hv)}
+                                      onChange={(e) => {
+                                        const newHeaders = { ...p.headers };
+                                        newHeaders[hk] = e.target.value;
+                                        updateProvider(i, { headers: newHeaders });
+                                      }}
+                                      placeholder="Header 值"
+                                      className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => {
+                                        const newHeaders = { ...p.headers };
+                                        delete newHeaders[hk];
+                                        updateProvider(i, { headers: newHeaders });
+                                      }}
+                                      className="p-1 text-subtle hover:text-danger"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => {
+                                    const newHeaders = { ...p.headers, "X-Custom": "" };
+                                    updateProvider(i, { headers: newHeaders });
+                                  }}
+                                  className="flex items-center gap-1.5 rounded-full border border-dashed border-line px-3 py-1 text-xs text-subtle transition-colors hover:text-foreground"
+                                >
+                                  <Plus size={12} />
+                                  添加 Header
+                                </button>
+                              </div>
+                            </div>
                           )}
                           {p.kind === "ollama" && (
                             <div className="sm:col-span-2 rounded-lg border border-dashed border-line p-3">
