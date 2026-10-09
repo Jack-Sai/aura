@@ -110,6 +110,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const [pulling, setPulling] = useState<Record<string, boolean>>({});
   const [testingConn, setTestingConn] = useState<Record<string, boolean>>({});
   const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
+  const [customModels, setCustomModels] = useState<Record<string, Array<{ id: string; label: string; context_limit: number }>>>({});
 
   useEffect(() => {
     const un = listen<{
@@ -133,7 +134,10 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
       .then(setRules)
       .catch(() => {});
     getProviders()
-      .then(setProvidersState)
+      .then((ps) => {
+        setProvidersState(ps);
+        setCustomModels({});
+      })
       .catch(() => {});
   }, []);
 
@@ -163,6 +167,30 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     } finally {
       setProbeBusy(false);
     }
+  }
+
+  function addCustomModel(i: number) {
+    const pid = providers[i].id;
+    setCustomModels((cm) => ({
+      ...cm,
+      [pid]: [...(cm[pid] || []), { id: "", label: "", context_limit: 4096 }],
+    }));
+  }
+
+  function removeCustomModel(i: number, mi: number) {
+    const pid = providers[i].id;
+    setCustomModels((cm) => ({
+      ...cm,
+      [pid]: cm[pid]?.filter((_, idx) => idx !== mi) || [],
+    }));
+  }
+
+  function updateCustomModel(i: number, mi: number, patch: Partial<{ id: string; label: string; context_limit: number }>) {
+    const pid = providers[i].id;
+    setCustomModels((cm) => ({
+      ...cm,
+      [pid]: cm[pid]?.map((m, idx) => (idx === mi ? { ...m, ...patch } : m)) || [],
+    }));
   }
 
   async function testConnection(id: string) {
@@ -686,6 +714,57 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                 >
                                   <Plus size={12} />
                                   添加 Header
+                                </button>
+                              </div>
+                            </div>
+                          )}
+                          {p.kind === "custom" && (
+                            <div className="sm:col-span-2">
+                              <label className="block text-xs text-subtle mb-1">模型映射（{p.id} 专用）</label>
+                              <div className="space-y-1.5">
+                                {customModels[p.id]?.map((m, mi) => (
+                                  <div key={m.id} className="flex items-center gap-1.5">
+                                    <input
+                                      value={m.id}
+                                      onChange={(e) =>
+                                        updateCustomModel(i, mi, { id: e.target.value })
+                                      }
+                                      placeholder="模型 ID（如 gpt-4o）"
+                                      className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    <input
+                                      value={m.label}
+                                      onChange={(e) =>
+                                        updateCustomModel(i, mi, { label: e.target.value })
+                                      }
+                                      placeholder="显示名称"
+                                      className="flex-1 rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    <input
+                                      value={m.context_limit}
+                                      onChange={(e) =>
+                                        updateCustomModel(i, mi, { context_limit: parseInt(e.target.value) || 4096 })
+                                      }
+                                      type="number"
+                                      placeholder="上下文长度"
+                                      className="w-24 rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    <button
+                                      type="button"
+                                      onClick={() => removeCustomModel(i, mi)}
+                                      className="p-1 text-subtle hover:text-danger"
+                                    >
+                                      <Trash2 size={14} />
+                                    </button>
+                                  </div>
+                                ))}
+                                <button
+                                  type="button"
+                                  onClick={() => addCustomModel(i)}
+                                  className="flex items-center gap-1.5 rounded-full border border-dashed border-line px-3 py-1 text-xs text-subtle transition-colors hover:text-foreground"
+                                >
+                                  <Plus size={12} />
+                                  添加模型
                                 </button>
                               </div>
                             </div>
