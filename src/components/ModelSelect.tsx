@@ -8,32 +8,6 @@ interface Props {
   onChange: (id: string) => void;
 }
 
-export interface ParsedModel {
-  vendor: string;
-  name: string;
-  params: string;
-  tags: string[];
-}
-
-export function parseModelId(id: string): ParsedModel {
-  const slash = id.indexOf("/");
-  const vendor = slash >= 0 ? id.slice(0, slash) : id;
-  const rest = slash >= 0 ? id.slice(slash + 1) : id;
-  const colon = rest.indexOf(":");
-  const core = colon >= 0 ? rest.slice(0, colon) : rest;
-  const tags = colon >= 0
-    ? rest
-        .slice(colon + 1)
-        .split(":")
-        .filter(Boolean)
-    : [];
-  const m = core.match(/^(.*?)-(?=\d+(?:\.\d+)?b(?:-|$))/);
-  const hasSplit = Boolean(m && m[1]);
-  const name = hasSplit ? (m as RegExpMatchArray)[1] : core;
-  const params = hasSplit ? core.slice((m as RegExpMatchArray)[1].length + 1) : "";
-  return { vendor, name, params, tags };
-}
-
 interface ModelGroup {
   provider: string;
   models: ModelInfo[];
@@ -71,7 +45,11 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
   }, [models]);
 
   const selected = models.find((m) => m.key === selectedModel);
-  const parsed = selected ? parseModelId(selected.id) : null;
+
+  /** 模型显示名：优先后端维护的 label，回退到完整 id */
+  function displayName(m: ModelInfo): string {
+    return m.label.trim() || m.id;
+  }
 
   return (
     <div ref={rootRef} className="relative">
@@ -84,11 +62,7 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         className="flex max-w-[240px] items-center gap-1.5 rounded-full border border-line bg-surface py-1 pl-3 pr-2.5 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
       >
         <span className="truncate">
-          {parsed
-            ? parsed.params
-              ? `${parsed.name} ${parsed.params}`
-              : parsed.name
-            : "加载中…"}
+          {selected ? displayName(selected) : "加载中…"}
         </span>
         <ChevronUp
           size={12}
@@ -108,7 +82,6 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
                 {g.provider}
               </div>
               {g.models.map((m) => {
-                const p = parseModelId(m.id);
                 const isActive = m.key === selectedModel;
                 return (
                   <button
@@ -124,21 +97,8 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
                       isActive ? "bg-bubble" : "hover:bg-bubble"
                     }`}
                   >
-                    <span className="min-w-0 flex-1 truncate">{p.name}</span>
-                    <span className="flex shrink-0 items-center gap-1.5">
-                      {p.params && (
-                        <span className="rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle">
-                          {p.params}
-                        </span>
-                      )}
-                      {p.tags.map((t) => (
-                        <span
-                          key={t}
-                          className="rounded-full border border-line bg-bubble px-1.5 py-0.5 text-[10px] text-subtle"
-                        >
-                          {t}
-                        </span>
-                      ))}
+                    <span className="min-w-0 flex-1 break-words">
+                      {displayName(m)}
                     </span>
                     <span className="flex w-5 shrink-0 justify-end">
                       {isActive && (

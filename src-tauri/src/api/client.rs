@@ -4,27 +4,30 @@ pub struct Model {
     pub context_limit: usize,
 }
 
-/// v0.1.x 遗留的默认模型表：v0.2.0 起仅作为配置迁移时的出厂默认，
+/// 出厂默认模型表：仅用于新装用户与 v0.1.x 遗留设置迁移，
 /// 运行时模型列表由 `config::RouterConfig` 驱动。
+///
+/// `label` 与模型 id 主体保持一致（去掉厂商前缀与 `:tag` 后缀），
+/// 避免「设置页显示简称、对话页显示解析名」两套叫法。
 pub const MODELS: &[Model] = &[
     Model {
         id: "nvidia/nemotron-3-ultra-550b-a55b:free",
-        label: "Ultra-550b",
+        label: "nemotron-3-ultra-550b-a55b",
         context_limit: 131072,
     },
     Model {
         id: "nvidia/nemotron-3-super-120b-a12b:free",
-        label: "Super-120b",
+        label: "nemotron-3-super-120b-a12b",
         context_limit: 131072,
     },
     Model {
         id: "nvidia/nemotron-3-nano-omni-30b-a3b-reasoning:free",
-        label: "Nano-Omni-30b",
+        label: "nemotron-3-nano-omni-30b-a3b-reasoning",
         context_limit: 65536,
     },
     Model {
         id: "nvidia/nemotron-3.5-lightning:free",
-        label: "Lightning",
+        label: "nemotron-3.5-lightning",
         context_limit: 131072,
     },
 ];

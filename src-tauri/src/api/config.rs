@@ -152,8 +152,26 @@ pub fn legacy_config(api_key: Option<String>, model_id: Option<String>) -> Route
 }
 
 /// 读取配置：`model_config` 不存在或损坏时回退遗留设置迁移。
+/// 把出厂默认模型的旧简称刷成与 id 主体一致的完整名称。
+///
+/// v0.2.5 之前 `MODELS` 的 label 是 `Ultra-550b` 这类简称，且已随
+/// `default_config()` 落进用户数据库；这里在加载时统一修正，
+/// 使设置页与对话页对同一模型显示同一个名字。返回是否有改动。
+fn migrate_model_labels(cfg: &mut RouterConfig) -> bool {
+    let mut changed = false;
+    for m in cfg.models.iter_mut() {
+        for def in MODELS {
+            if m.id == def.id && m.label != def.label {
+                m.label = def.label.to_string();
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
 pub fn load_config(conn: &Connection) -> RouterConfig {
-    match crate::db::get_setting(conn, CONFIG_KEY)
+    let mut cfg = match crate::db::get_setting(conn, CONFIG_KEY)
         .ok()
         .flatten()
         .and_then(|json| serde_json::from_str::<RouterConfig>(&json).ok())
@@ -165,7 +183,12 @@ pub fn load_config(conn: &Connection) -> RouterConfig {
                 .flatten(),
             crate::db::get_setting(conn, "model_id").ok().flatten(),
         ),
+    };
+    // 迁移旧简称后就地回写，避免每次启动都做一遍
+    if migrate_model_labels(&mut cfg) {
+        let _ = save_config(conn, &cfg);
     }
+    cfg
 }
 
 pub fn save_config(conn: &Connection, cfg: &RouterConfig) -> Result<(), String> {
@@ -500,6 +523,36 @@ mod tests {
         // selected 指向该模型，normalize 不应改写
         let cfg = normalize(cfg);
         assert_eq!(cfg.selected, "openrouter:legacy/model");
+    }
+
+    #[test]
+    fn migrate_model_labels_refreshes_legacy_short_names() {
+        let mut cfg = default_config();
+        // 模拟旧版本落库的简称
+        cfg.models[0].label = "Ultra-550b".into();
+        cfg.models[1].label = "Super-120b".into();
+        assert!(migrate_model_labels(&mut cfg));
+        assert_eq!(cfg.models[0].label, "nemotron-3-ultra-550b-a55b");
+        assert_eq!(cfg.models[1].label, "nemotron-3-super-120b-a12b");
+
+        // 已是新名称则不再改动（幂等，避免每次启动都回写数据库）
+        assert!(!migrate_model_labels(&mut cfg));
+    }
+
+    #[test]
+    fn migrate_model_labels_leaves_other_models_untouched() {
+        let mut cfg = default_config();
+        cfg.models.push(ModelConfig {
+            provider: "deepseek".into(),
+            id: "deepseek-chat".into(),
+            label: "DeepSeek V3".into(),
+            context_limit: 65536,
+            enabled: true,
+            pinned: true,
+            tags: vec![],
+        });
+        assert!(!migrate_model_labels(&mut cfg));
+        assert_eq!(cfg.models[4].label, "DeepSeek V3");
     }
 
     #[test]
