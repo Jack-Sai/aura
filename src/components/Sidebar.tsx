@@ -84,7 +84,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
         </button>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-3 pb-4">
+      <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         {workspaces.map((w) => {
           const isOpen = expanded.has(w);
           const wsSessions = sessions.filter((s) => s.workspace === w);
