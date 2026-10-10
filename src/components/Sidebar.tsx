@@ -202,7 +202,7 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
         })}
       </div>
 
-      <footer className="border-t border-line px-3 py-2">
+      <footer className="px-3 py-2">
         <button
           type="button"
           onClick={onOpenSettings}
