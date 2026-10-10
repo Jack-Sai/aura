@@ -526,6 +526,85 @@ mod tests {
     }
 
     #[test]
+    fn switching_provider_id_orphans_old_models() {
+        // 回归场景：唯一一张卡片从 openrouter 切换到 zhipu（id 随之改变），
+        // 原先收藏的 OpenRouter 模型（anthropic/...、x-ai/...）必须被清理，
+        // 否则它们会与新拉取的 GLM 模型挂在同一 provider 下，
+        // 导致模型列表按厂商分类时全部归到同一个厂商标题。
+        let mut cfg = default_config();
+        assert_eq!(cfg.models.len(), MODELS.len());
+        assert!(cfg.models.iter().all(|m| m.provider == "openrouter"));
+
+        // 用户把卡片改成智谱 GLM：provider id 变更
+        cfg.providers[0].id = "zhipu".to_string();
+        cfg.providers[0].base_url = "https://open.bigmodel.cn/api/paas/v4".into();
+
+        // 新拉取的 GLM 模型归到新 id 下
+        cfg.models.push(ModelConfig {
+            provider: "zhipu".into(),
+            id: "glm-4.7".into(),
+            label: "glm-4.7".into(),
+            context_limit: 8192,
+            enabled: true,
+            pinned: true,
+            tags: vec![],
+        });
+
+        let cfg = normalize(cfg);
+        // 旧的 OpenRouter 模型作为孤儿被清理
+        assert!(cfg.models.iter().all(|m| m.provider == "zhipu"));
+        assert_eq!(cfg.models.len(), 1);
+        assert_eq!(cfg.models[0].id, "glm-4.7");
+        // selected 指向已消失的模型时回退到唯一可选项
+        assert_eq!(cfg.selected, "zhipu:glm-4.7");
+    }
+
+    #[test]
+    fn two_providers_keep_their_models_separate() {
+        // 正向场景：OpenRouter 与智谱 GLM 并存时，模型必须各归各家
+        let mut cfg = default_config();
+        cfg.providers.push(ProviderConfig {
+            id: "zhipu".into(),
+            preset: None,
+            kind: ProviderKind::OpenAi,
+            name: "智谱 GLM".into(),
+            base_url: "https://open.bigmodel.cn/api/paas/v4".into(),
+            api_key: String::new(),
+            headers: serde_json::Map::new(),
+            models_path: None,
+            deployment: None,
+            api_version: None,
+            enabled: true,
+        });
+        cfg.models.push(ModelConfig {
+            provider: "zhipu".into(),
+            id: "glm-4.7".into(),
+            label: "glm-4.7".into(),
+            context_limit: 8192,
+            enabled: true,
+            pinned: true,
+            tags: vec![],
+        });
+
+        let cfg = normalize(cfg);
+        assert_eq!(cfg.models.len(), MODELS.len() + 1);
+        let by_provider = |pid: &str| {
+            cfg.models
+                .iter()
+                .filter(|m| m.provider == pid)
+                .count()
+        };
+        assert_eq!(by_provider("openrouter"), MODELS.len());
+        assert_eq!(by_provider("zhipu"), 1);
+        // 复合 key 前缀互不干扰
+        assert!(cfg.models.iter().any(|m| m.key() == "zhipu:glm-4.7"));
+        assert!(cfg
+            .models
+            .iter()
+            .any(|m| m.key() == format!("openrouter:{}", MODELS[0].id)));
+    }
+
+    #[test]
     fn migrate_model_labels_refreshes_legacy_short_names() {
         let mut cfg = default_config();
         // 模拟旧版本落库的简称

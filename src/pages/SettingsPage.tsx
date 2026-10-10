@@ -386,10 +386,15 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   }
 
   /**
-   * 切换厂商：自动填入对应的接口地址与端点特例。
+   * 切换厂商：同步更换 provider 的 id，并自动填入对应的接口地址与端点特例。
    *
-   * 仅当当前地址为空、或仍等于上一个厂商的预设地址时才覆盖，
-   * 避免抹掉用户手动修改过的地址。
+   * **id 必须跟着变**：id 既是模型 key 的前缀（`{provider}:{model}`），也是
+   * 模型归属的判定依据。若沿用旧 id（如默认配置里的 `openrouter`），切换厂商后
+   * 先前收藏的 OpenRouter 模型会和新拉取的模型挂在同一个 provider 下，
+   * 导致模型列表「按厂商分类」把所有模型都归到同一个厂商标题下。
+   *
+   * 旧 id 消失后，原属于它的模型会在后端 `normalize` 中作为孤儿被清理，
+   * 这正是切换厂商的预期语义。
    */
   function applyPreset(index: number, presetId: string) {
     const preset = presetById(presetId);
@@ -404,7 +409,16 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
         cur.base_url.trim().replace(/\/+$/, "") ===
           curPreset.baseUrl.replace(/\/+$/, ""));
 
+    // 新 id 取预设 id；与既有卡片冲突时追加序号（如 openai-2）
+    const oldId = cur.id;
+    let newId = preset.id;
+    for (let n = 2; ; n++) {
+      if (!providers.some((p) => p.id === newId && p.id !== oldId)) break;
+      newId = `${preset.id}-${n}`;
+    }
+
     const patch: Partial<ProviderConfig> = {
+      id: newId,
       preset: presetId,
       kind: preset.kind,
       models_path: preset.modelsPath ?? null,
@@ -422,15 +436,41 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     patch.api_version =
       preset.kind === "azure" ? (cur.api_version ?? "2024-06-01") : null;
 
+    // 模型目录的临时状态以 provider id 为键，id 变化时一并迁移，
+    // 避免展开的目录与勾选状态丢失
+    if (newId !== oldId) {
+      const renameKey = <T,>(
+        prev: Record<string, T>,
+        next: (fn: (p: Record<string, T>) => Record<string, T>) => void,
+      ) => {
+        if (!(oldId in prev)) return;
+        next((p) => {
+          const { [oldId]: moved, ...rest } = p;
+          return { ...rest, [newId]: moved };
+        });
+      };
+      renameKey(catalogList, setCatalogList);
+      renameKey(catalogDraft, setCatalogDraft);
+      renameKey(catalogQuery, setCatalogQuery);
+      renameKey(catalogError, setCatalogError);
+      renameKey(catalogSaved, setCatalogSaved);
+      renameKey(catalogBusy, setCatalogBusy);
+      renameKey(statuses, setStatuses);
+      renameKey(testResults, setTestResults);
+      renameKey(visibleKeys, setVisibleKeys);
+    }
+
     updateProvider(index, patch);
   }
 
   function addProvider() {
     const n = providers.length + 1;
+    // id 需全局唯一且后续会随厂商切换而变更，此处用时间戳保证不冲突
+    const id = `custom${Date.now() % 1000000}`;
     setProvidersState([
       ...providers,
       {
-        id: `custom${Date.now() % 1000000}`,
+        id,
         preset: CUSTOM_PRESET_ID,
         kind: "custom",
         name: `自定义供应商 ${n}`,
@@ -580,7 +620,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                   </button>
                 </div>
                 <p className="mt-1 text-xs text-subtle">
-                  密钥仅保存在本地数据库；模型列表顺序即降级顺序
+                  密钥仅保存在本地数据库；模型列表顺序即降级顺序。切换厂商会移除该卡片下已收藏的模型，请先确认无需再用。
                 </p>
 
                 <div className="mt-3 space-y-3">
