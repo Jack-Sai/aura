@@ -53,6 +53,44 @@ fn greet(name: &str) -> String {
     format!("Hello, {}! You've been greeted from Rust!", name)
 }
 
+/// 判断是否为应用自身的地址（允许 WebView 导航）。
+///
+/// - 生产：自定义协议 `tauri://`，或 Windows 上的 `http://tauri.localhost`
+/// - 开发：`http://localhost:1420`（tauri.conf.json 的 devUrl）
+/// 其余一律视为外部链接，交系统浏览器打开并阻止导航。
+fn is_app_url(url: &tauri::Url) -> bool {
+    match url.scheme() {
+        "tauri" | "file" => true,
+        "http" | "https" => {
+            let host = url.host_str().unwrap_or("");
+            host == "localhost"
+                || host == "127.0.0.1"
+                || host == "tauri.localhost"
+        }
+        _ => false,
+    }
+}
+
+#[cfg(test)]
+mod nav_tests {
+    use super::is_app_url;
+
+    #[test]
+    fn allows_app_urls_only() {
+        // 应用自身
+        assert!(is_app_url(&"tauri://localhost/".parse().unwrap()));
+        assert!(is_app_url(&"http://tauri.localhost/".parse().unwrap()));
+        // 开发服务器
+        assert!(is_app_url(&"http://localhost:1420/".parse().unwrap()));
+        assert!(is_app_url(&"http://127.0.0.1:1420/".parse().unwrap()));
+        // 外部链接必须拦截，否则 WebView 会跳走并失去标题栏
+        assert!(!is_app_url(&"http://example.com/a".parse().unwrap()));
+        assert!(!is_app_url(&"https://api.deepseek.com/models".parse().unwrap()));
+        assert!(!is_app_url(&"http://localhost.evil.com/".parse().unwrap()));
+        assert!(!is_app_url(&"ftp://files.example.com/".parse().unwrap()));
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     let api_key = std::env::var("OPENROUTER_API_KEY").ok();
@@ -61,8 +99,40 @@ pub fn run() {
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
+            let dir = app.path().app_data_dir()?;
+            std::fs::create_dir_all(&dir)?;
+            let db = db::open(&dir.join("aura.db"))?;
+
+            // 主窗口在代码中构建（而非 tauri.conf.json），因为 on_navigation
+            // 只能在 Builder 阶段注册——Tauri 2 没有运行时 setter。
+            //
+            // 导航兜底的作用：模型输出里的链接一律交外部浏览器打开，阻止 WebView
+            // 跟随。窗口为无边框，一旦跳到外部页面就会失去标题栏与关闭按钮，
+            // 用户只能杀进程。即便前端漏掉 preventDefault，这里也能拦住。
+            let handle = app.handle().clone();
+            let window = tauri::WebviewWindowBuilder::new(
+                app,
+                "main",
+                tauri::WebviewUrl::default(),
+            )
+            .title("aura")
+            .inner_size(1280.0, 800.0)
+            .maximized(true)
+            .decorations(false)
+            .on_navigation(move |url| {
+                if is_app_url(url) {
+                    return true;
+                }
+                use tauri_plugin_opener::OpenerExt;
+                let _ = handle
+                    .opener()
+                    .open_url(url.to_string(), None::<&str>);
+                false
+            })
+            .build()?;
+
             #[cfg(any(windows, target_os = "linux"))]
-            if let Some(window) = app.get_webview_window("main") {
+            {
                 let icon = tauri::include_image!("icons/128x128.png");
                 let _ = window.set_icon(icon);
                 #[cfg(windows)]
@@ -75,9 +145,8 @@ pub fn run() {
                     }
                 }
             }
-            let dir = app.path().app_data_dir()?;
-            std::fs::create_dir_all(&dir)?;
-            let db = db::open(&dir.join("aura.db"))?;
+            let _ = &window;
+
             app.manage(AppState::new(api_key, db));
             Ok(())
         })

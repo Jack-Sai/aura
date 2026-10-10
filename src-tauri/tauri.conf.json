@@ -10,15 +10,7 @@
     "frontendDist": "../dist"
   },
   "app": {
-    "windows": [
-      {
-        "title": "aura",
-        "width": 1280,
-        "height": 800,
-        "decorations": false,
-        "maximized": true
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }
