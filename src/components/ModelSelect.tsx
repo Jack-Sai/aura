@@ -63,9 +63,9 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         aria-label="选择模型"
         aria-expanded={open}
         disabled={models.length === 0}
-        className="flex max-w-[240px] items-center gap-1.5 rounded-full border border-line bg-surface py-1 pl-3 pr-2.5 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
+        className="flex items-center gap-1.5 py-1 text-xs text-subtle transition-colors hover:text-foreground disabled:opacity-60"
       >
-        <span className="truncate">
+        <span className="break-words text-left">
           {selected ? displayName(selected) : "加载中…"}
         </span>
         <ChevronUp
@@ -78,7 +78,7 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
         <div
           role="listbox"
           aria-label="模型列表"
-          className="absolute bottom-full left-0 z-20 mb-1.5 min-w-[420px] overflow-hidden rounded-lg border border-line bg-surface py-1 shadow-lg"
+          className="absolute bottom-full left-0 z-20 mb-1.5 max-h-[420px] min-w-[420px] overflow-y-auto overscroll-contain rounded-lg border border-line bg-surface py-1 shadow-lg"
         >
           {groups.map((g) => (
             <div key={g.provider}>
