@@ -12,6 +12,11 @@ pub const CONFIG_KEY: &str = "model_config";
 pub struct ProviderConfig {
     /// 主键，不含冒号（作为模型 key 前缀）
     pub id: String,
+    /// 引导用户选择的厂商预设 id（OpenRouter / DeepSeek / …）。
+    /// 多个厂商共用同一 `kind`（均为 OpenAI 兼容），故需单独记录预设，
+    /// 用于设置页回显厂商与模型列表分组标题。
+    #[serde(default)]
+    pub preset: Option<String>,
     pub kind: ProviderKind,
     /// 展示名称
     pub name: String,
@@ -23,6 +28,11 @@ pub struct ProviderConfig {
     /// 附加请求头（v0.2.6 自定义供应商）
     #[serde(default)]
     pub headers: serde_json::Map<String, serde_json::Value>,
+    /// 模型列表端点路径覆盖（相对 base_url）。
+    /// DeepSeek 的列表端点是 `/models`（不带 `/v1`）；阿里百炼 chat 与
+    /// models 端点不同构，均无法由 base 推导，故显式配置。
+    #[serde(default)]
+    pub models_path: Option<String>,
     /// Azure deployment 名（kind == azure 时使用）
     #[serde(default)]
     pub deployment: Option<String>,
@@ -86,11 +96,13 @@ pub fn default_config() -> RouterConfig {
     RouterConfig {
         providers: vec![ProviderConfig {
             id: "openrouter".to_string(),
+            preset: Some("openrouter".into()),
             kind: ProviderKind::OpenRouter,
             name: "OpenRouter".to_string(),
             base_url: "https://openrouter.ai/api/v1".to_string(),
             api_key: String::new(),
             headers: serde_json::Map::new(),
+            models_path: None,
             deployment: None,
             api_version: None,
             enabled: true,
@@ -314,11 +326,13 @@ mod tests {
         let mut cfg = default_config();
         cfg.providers.push(ProviderConfig {
             id: "ollama".into(),
+            preset: None,
             kind: ProviderKind::Ollama,
             name: "Ollama".into(),
             base_url: "http://localhost:11434".into(),
             api_key: String::new(),
             headers: serde_json::Map::new(),
+            models_path: None,
             deployment: None,
             api_version: None,
             enabled: true,

@@ -46,7 +46,14 @@ fn build_executor(p: &ProviderConfig) -> CompatProvider {
             p.api_version.as_deref().unwrap_or("2024-02-16"),
             key,
         ),
-        _ => CompatProvider::new(&p.id, p.kind, &p.base_url, key, p.headers.clone()),
+        _ => CompatProvider::with_models_path(
+            &p.id,
+            p.kind,
+            &p.base_url,
+            key,
+            p.headers.clone(),
+            p.models_path.clone(),
+        ),
     }
 }
 
@@ -304,11 +311,13 @@ mod tests {
     fn ollama_provider() -> ProviderConfig {
         ProviderConfig {
             id: "ollama".into(),
+            preset: None,
             kind: ProviderKind::Ollama,
             name: "Ollama".into(),
             base_url: "http://localhost:11434".into(),
             api_key: String::new(),
             headers: serde_json::Map::new(),
+            models_path: None,
             deployment: None,
             api_version: None,
             enabled: true,
@@ -467,5 +476,80 @@ mod tests {
         cfg.providers[0].enabled = false;
         let router = Router::new(cfg);
         assert!(router.chain(0).is_empty());
+    }
+
+    #[test]
+    fn mixed_fallback_chain_local_then_cloud() {
+        // 本地 + 云端混合降级链：本地模型在前，云端在后
+        let mut cfg = default_config();
+        // 将本地模型插入到最前面
+        cfg.models.insert(0, ModelConfig {
+            provider: "ollama".into(),
+            id: "qwen3:0.6b".into(),
+            label: "Qwen3 0.6B".into(),
+            context_limit: 8192,
+            enabled: true,
+            tags: vec!["local".into()],
+        });
+        cfg.providers.push(ProviderConfig {
+            id: "ollama".into(),
+            preset: None,
+            kind: ProviderKind::Ollama,
+            name: "Ollama".into(),
+            base_url: "http://127.0.0.1:11434".into(),
+            api_key: String::new(),
+            headers: serde_json::Map::new(),
+            models_path: None,
+            deployment: None,
+            api_version: None,
+            enabled: true,
+        });
+        // 选中本地模型（现在在索引 0）
+        cfg.selected = model_key("ollama", "qwen3:0.6b");
+
+        let router = Router::new(cfg);
+        let chain = router.chain(0);
+        // 链应包含本地模型，然后是所有启用的云端模型
+        assert!(!chain.is_empty());
+        assert_eq!(chain[0].provider, "ollama");
+        // 云端模型也在链中
+        assert!(chain.iter().any(|e| e.provider == "openrouter"));
+    }
+
+    #[test]
+    fn chain_includes_badcloud_without_key() {
+        // 模拟某供应商执行器缺失（如配置错误），应跳过并继续下一个
+        let mut cfg = default_config();
+        // 添加一个启用但执行器构建失败的供应商（API key 为空的云端）
+        cfg.providers.push(ProviderConfig {
+            id: "badcloud".into(),
+            preset: None,
+            kind: ProviderKind::OpenAi,
+            name: "Bad Cloud".into(),
+            base_url: "https://api.example.com".into(),
+            api_key: String::new(),
+            headers: serde_json::Map::new(),
+            models_path: None,
+            deployment: None,
+            api_version: None,
+            enabled: true,
+        });
+        cfg.models.push(ModelConfig {
+            provider: "badcloud".into(),
+            id: "bad-model".into(),
+            label: "Bad Model".into(),
+            context_limit: 4096,
+            enabled: true,
+            tags: vec![],
+        });
+        cfg.selected = model_key("badcloud", "bad-model");
+
+        let router = Router::new(cfg);
+        // badcloud 无 key，执行器仍会创建但 ready=false
+        let chain = router.chain(0);
+        // 链应包含所有启用模型
+        assert!(chain.iter().any(|e| e.provider == "badcloud"));
+        // openrouter 在后
+        assert!(chain.iter().any(|e| e.provider == "openrouter"));
     }
 }

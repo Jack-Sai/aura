@@ -97,11 +97,15 @@ export type ProviderKind =
 
 export interface ProviderConfig {
   id: string;
+  /** 厂商预设 id（后端可空，仅用于设置页回显厂商） */
+  preset?: string | null;
   kind: ProviderKind;
   name: string;
   base_url: string;
   api_key: string;
   headers: Record<string, unknown>;
+  /** 模型列表端点路径覆盖（DeepSeek / 阿里百炼等） */
+  models_path?: string | null;
   deployment: string | null;
   api_version: string | null;
   enabled: boolean;

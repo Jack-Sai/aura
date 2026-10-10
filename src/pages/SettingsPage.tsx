@@ -13,6 +13,11 @@ import {
   type ProviderKind,
   type ProviderStatus,
 } from "../lib/api";
+import {
+  ALL_PRESETS,
+  CUSTOM_PRESET_ID,
+  presetById,
+} from "../lib/providers";
 import { useStore } from "../store";
 import Select from "../components/Select";
 
@@ -30,30 +35,20 @@ const SECTIONS = [
 
 type SectionId = (typeof SECTIONS)[number]["id"];
 
-const KIND_OPTIONS: { value: ProviderKind; label: string }[] = [
-  { value: "openrouter", label: "OpenRouter" },
-  { value: "openai", label: "OpenAI" },
-  { value: "azure", label: "Azure OpenAI" },
-  { value: "ollama", label: "Ollama" },
-  { value: "llama_cpp", label: "llama.cpp" },
-  { value: "custom", label: "自定义" },
-];
+/** 厂商下拉项直接来自预设目录 */
+const PRESET_OPTIONS = ALL_PRESETS.map((p) => ({ value: p.id, label: p.label }));
 
-function basePlaceholder(kind: ProviderKind): string {
-  switch (kind) {
-    case "openrouter":
-      return "https://openrouter.ai/api/v1";
-    case "openai":
-      return "https://api.openai.com/v1";
-    case "azure":
-      return "https://your-resource.openai.azure.com";
-    case "ollama":
-      return "http://localhost:11434";
-    case "llama_cpp":
-      return "http://127.0.0.1:8080";
-    default:
-      return "http://localhost:8000/v1";
-  }
+/**
+ * 推断某张供应商卡片当前对应的预设 id。
+ * 优先用持久化的 preset；旧配置无此字段时按 base_url 反查，
+ * 查不到则回退「自定义」。
+ */
+function inferPreset(p: ProviderConfig): string {
+  if (p.preset && presetById(p.preset)) return p.preset;
+  const hit = ALL_PRESETS.find(
+    (x) => x.baseUrl && x.baseUrl === p.base_url.replace(/\/+$/, ""),
+  );
+  return hit?.id ?? CUSTOM_PRESET_ID;
 }
 
 function isLocalKind(kind: ProviderKind): boolean {
@@ -269,17 +264,59 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     );
   }
 
+  /**
+   * 切换厂商：自动填入对应的接口地址与端点特例。
+   *
+   * 仅当当前地址为空、或仍等于上一个厂商的预设地址时才覆盖，
+   * 避免抹掉用户手动修改过的地址。
+   */
+  function applyPreset(index: number, presetId: string) {
+    const preset = presetById(presetId);
+    const cur = providers[index];
+    if (!preset || !cur) return;
+
+    const curPresetId = inferPreset(cur);
+    const curPreset = presetById(curPresetId);
+    const stillPristine =
+      cur.base_url.trim() === "" ||
+      (!!curPreset?.baseUrl &&
+        cur.base_url.trim().replace(/\/+$/, "") ===
+          curPreset.baseUrl.replace(/\/+$/, ""));
+
+    const patch: Partial<ProviderConfig> = {
+      preset: presetId,
+      kind: preset.kind,
+      models_path: preset.modelsPath ?? null,
+    };
+    if (stillPristine) {
+      patch.base_url = preset.baseUrl;
+      patch.models_path = preset.modelsPath ?? null;
+    }
+    // 名称仍是默认值时跟随厂商名，用户改过则保留
+    if (!cur.name.trim() || curPreset?.label === cur.name.trim()) {
+      patch.name = preset.label;
+    }
+    // Azure 专有字段：切出 Azure 时清空，切回 Azure 时给默认值
+    patch.deployment = preset.kind === "azure" ? (cur.deployment ?? "") : null;
+    patch.api_version =
+      preset.kind === "azure" ? (cur.api_version ?? "2024-06-01") : null;
+
+    updateProvider(index, patch);
+  }
+
   function addProvider() {
     const n = providers.length + 1;
     setProvidersState([
       ...providers,
       {
         id: `custom${Date.now() % 1000000}`,
+        preset: CUSTOM_PRESET_ID,
         kind: "custom",
         name: `自定义供应商 ${n}`,
-        base_url: basePlaceholder("custom"),
+        base_url: "",
         api_key: "",
         headers: {},
+        models_path: null,
         deployment: null,
         api_version: null,
         enabled: true,
@@ -446,14 +483,12 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                             }
                             className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`}
                           />
-                          <div className="w-[124px] shrink-0">
+                          <div className="w-[150px] shrink-0">
                             <Select
-                              value={p.kind}
-                              options={KIND_OPTIONS}
-                              onChange={(v) =>
-                                updateProvider(i, { kind: v as ProviderKind })
-                              }
-                              aria-label="供应商类型"
+                              value={inferPreset(p)}
+                              options={PRESET_OPTIONS}
+                              onChange={(v) => applyPreset(i, v)}
+                              aria-label="模型厂商"
                             />
                           </div>
                           <input
@@ -587,7 +622,10 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                 onChange={(e) =>
                                   updateProvider(i, { base_url: e.target.value })
                                 }
-                                placeholder={basePlaceholder(p.kind)}
+                                placeholder={
+                                  presetById(inferPreset(p))?.baseUrl ||
+                                  "https://your-endpoint/v1"
+                                }
                                 className="mt-1 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 font-mono text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
                               />
                             )}

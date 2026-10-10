@@ -7,9 +7,22 @@ use super::error::{classify_reqwest, classify_status, ModelError};
 use super::provider::{ChatProvider, ProbeStatus, ProviderKind, RemoteModel};
 use super::sse::ChatStream;
 
+/// base 的最后一段是否为版本号段（`v1` / `v3` / `v4` …）。
+///
+/// 不能只判断是否等于 `v1`：智谱 GLM 的 base 为 `…/api/paas/v4`、
+/// 火山方舟为 `…/api/v3`，若一律按「裸域名」补 `/v1` 会拼出
+/// `…/v4/v1/chat/completions` 而 404。
+fn has_version_segment(base: &str) -> bool {
+    base.rsplit('/')
+        .next()
+        .and_then(|seg| seg.strip_prefix('v'))
+        .map(|num| !num.is_empty() && num.chars().all(|c| c.is_ascii_digit()))
+        .unwrap_or(false)
+}
+
 /// 端点拼装规则（OpenAI 兼容族通用）：
 /// 1. base 已含 `/chat/completions` → 原样使用
-/// 2. base 以 `/v1` 结尾 → 追加 `/chat/completions`
+/// 2. base 末段为版本号（`v1`/`v3`/`v4`…）→ 追加 `/chat/completions`
 /// 3. 否则（如 `https://api.openai.com`、`http://localhost:11434`）→ 追加 `/v1/chat/completions`
 /// Azure 走 deployment URL 拼装，不适用以上规则。
 pub fn chat_endpoint(kind: ProviderKind, base_url: &str) -> String {
@@ -21,7 +34,7 @@ pub fn chat_endpoint(kind: ProviderKind, base_url: &str) -> String {
     if base.contains("/chat/completions") {
         return base.to_string();
     }
-    if base.ends_with("/v1") {
+    if has_version_segment(base) {
         format!("{}/chat/completions", base)
     } else {
         format!("{}/v1/chat/completions", base)
@@ -52,9 +65,26 @@ pub fn is_loopback_base(url: &str) -> bool {
     host.eq_ignore_ascii_case("localhost") || host == "127.0.0.1" || host == "::1"
 }
 
-/// 模型列表端点（同 chat 规则，将尾部替换为 /models）。
+/// 模型列表端点。
+///
+/// 优先使用配置中的显式覆盖（`models_url`）：DeepSeek 的列表端点是
+/// `GET /models`（不带 `/v1`，`/v1` 只是 OpenAI SDK 兼容别名），
+/// 阿里百炼则是 chat 走 `/compatible-mode/v1`、列表走 `/api/v1/models`，
+/// 两者都无法由 base 推导。未配置覆盖时回退到与 chat 一致的版本段规则。
 pub fn models_endpoint(kind: ProviderKind, base_url: &str) -> String {
+    resolve_models_endpoint(kind, base_url, None)
+}
+
+pub fn resolve_models_endpoint(
+    kind: ProviderKind,
+    base_url: &str,
+    override_path: Option<&str>,
+) -> String {
     let base = base_url.trim_end_matches('/');
+    if let Some(p) = override_path.map(str::trim).filter(|p| !p.is_empty()) {
+        let p = p.trim_end_matches('/');
+        return format!("{}/{}", base, p.trim_start_matches('/'));
+    }
     if base.contains("/chat/completions") {
         return base
             .trim_end_matches("/chat/completions")
@@ -64,7 +94,7 @@ pub fn models_endpoint(kind: ProviderKind, base_url: &str) -> String {
     if kind == ProviderKind::Ollama {
         return format!("{}/api/tags", base);
     }
-    if base.ends_with("/v1") {
+    if has_version_segment(base) {
         format!("{}/models", base)
     } else {
         format!("{}/v1/models", base)
@@ -85,6 +115,9 @@ pub struct CompatProvider {
     api_key: Arc<RwLock<Option<String>>>,
     /// 附加请求头（自定义供应商）
     headers: serde_json::Map<String, Value>,
+    /// 模型列表端点路径覆盖（相对 base），用于 DeepSeek/阿里百炼等
+    /// chat 与 models 端点不同构的厂商
+    models_path: Option<String>,
     http: reqwest::Client,
 }
 
@@ -95,6 +128,18 @@ impl CompatProvider {
         base_url: &str,
         api_key: Option<String>,
         headers: serde_json::Map<String, Value>,
+    ) -> Self {
+        Self::with_models_path(id, kind, base_url, api_key, headers, None)
+    }
+
+    /// 同 `new`，但可显式指定模型列表端点路径覆盖。
+    pub fn with_models_path(
+        id: &str,
+        kind: ProviderKind,
+        base_url: &str,
+        api_key: Option<String>,
+        headers: serde_json::Map<String, Value>,
+        models_path: Option<String>,
     ) -> Self {
         let is_local = is_loopback_base(base_url);
         let mut builder = reqwest::Client::builder()
@@ -114,6 +159,9 @@ impl CompatProvider {
             api_version: None,
             api_key: Arc::new(RwLock::new(api_key.filter(|k| !k.trim().is_empty()))),
             headers,
+            models_path: models_path
+                .map(|p| p.trim().to_string())
+                .filter(|p| !p.is_empty()),
             http,
         }
     }
@@ -164,7 +212,7 @@ impl CompatProvider {
     }
 
     pub fn models_url(&self) -> String {
-        models_endpoint(self.kind, &self.base_url)
+        resolve_models_endpoint(self.kind, &self.base_url, self.models_path.as_deref())
     }
 
     fn request(&self, model: &str, messages: &[Value], stream: bool) -> reqwest::RequestBuilder {
@@ -534,6 +582,71 @@ mod tests {
         assert!(!is_loopback_base("http://192.168.1.5:8000"));
         assert!(!is_loopback_base("http://127.0.0.2"));
         assert!(!is_loopback_base(""));
+    }
+
+    #[test]
+    fn version_segment_endpoints_for_chinese_vendors() {
+        // 智谱 GLM：base 末段是 v4，不能再补 /v1
+        assert_eq!(
+            chat_endpoint(ProviderKind::OpenAi, "https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4/chat/completions"
+        );
+        assert_eq!(
+            models_endpoint(ProviderKind::OpenAi, "https://open.bigmodel.cn/api/paas/v4"),
+            "https://open.bigmodel.cn/api/paas/v4/models"
+        );
+        // 火山方舟：末段 v3
+        assert_eq!(
+            chat_endpoint(ProviderKind::OpenAi, "https://ark.cn-beijing.volces.com/api/v3"),
+            "https://ark.cn-beijing.volces.com/api/v3/chat/completions"
+        );
+        // DeepSeek：裸域名 → 补 /v1（官方兼容别名）
+        assert_eq!(
+            chat_endpoint(ProviderKind::OpenAi, "https://api.deepseek.com"),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
+        // DeepSeek 模型列表必须走 /models（不带 /v1），通过覆盖实现
+        assert_eq!(
+            resolve_models_endpoint(
+                ProviderKind::OpenAi,
+                "https://api.deepseek.com",
+                Some("/models"),
+            ),
+            "https://api.deepseek.com/models"
+        );
+        // 阿里百炼：chat 与 models 不同构
+        assert_eq!(
+            chat_endpoint(
+                ProviderKind::OpenAi,
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            ),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/chat/completions"
+        );
+        assert_eq!(
+            resolve_models_endpoint(
+                ProviderKind::OpenAi,
+                "https://dashscope.aliyuncs.com/compatible-mode/v1",
+                Some("/api/v1/models"),
+            ),
+            "https://dashscope.aliyuncs.com/compatible-mode/v1/api/v1/models"
+        );
+        // 非版本段末缀不应误判：api.deepseek.com 的 "com" 不是版本号
+        assert!(!has_version_segment("https://api.deepseek.com"));
+        assert!(has_version_segment("http://localhost:11434/v1"));
+        // 执行器层面覆盖生效
+        let p = CompatProvider::with_models_path(
+            "deepseek",
+            ProviderKind::OpenAi,
+            "https://api.deepseek.com",
+            Some("sk-x".into()),
+            Default::default(),
+            Some("/models".into()),
+        );
+        assert_eq!(p.models_url(), "https://api.deepseek.com/models");
+        assert_eq!(
+            p.endpoint(),
+            "https://api.deepseek.com/v1/chat/completions"
+        );
     }
 
     #[test]
