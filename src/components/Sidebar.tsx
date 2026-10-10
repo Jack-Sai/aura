@@ -1,7 +1,16 @@
 ﻿import { open } from "@tauri-apps/plugin-dialog";
-import { ChevronRight, Plus, Settings, Trash2 } from "lucide-react";
+import {
+  ChevronRight,
+  PanelLeftClose,
+  PanelLeftOpen,
+  Plus,
+  Settings,
+  Trash2,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
+
+const COLLAPSE_KEY = "aura-sidebar-collapsed";
 
 interface Props {
   onOpenSettings: () => void;
@@ -31,6 +40,16 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
   } = useStore();
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
+  const [collapsed, setCollapsed] = useState(
+    () => localStorage.getItem(COLLAPSE_KEY) === "1",
+  );
+
+  function toggleCollapsed() {
+    setCollapsed((v) => {
+      localStorage.setItem(COLLAPSE_KEY, v ? "0" : "1");
+      return !v;
+    });
+  }
 
   useEffect(() => {
     if (workspace) {
@@ -58,6 +77,77 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
     }
   }
 
+  if (collapsed) {
+    return (
+      <aside className="flex w-14 shrink-0 flex-col border-r border-line">
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          className="mx-auto mt-3 mb-1 rounded-tag p-1.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+        >
+          <img src="/logo.png" alt="Aura" draggable={false} className="h-5 w-5" />
+        </button>
+
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label="展开侧边栏"
+          title="展开侧边栏"
+          className="mx-auto mb-2 rounded-tag p-1 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+        >
+          <PanelLeftOpen size={14} />
+        </button>
+
+        <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-2 py-1">
+          {workspaces.map((w) => (
+            <button
+              key={w}
+              type="button"
+              onClick={() => {
+                switchWorkspace(w);
+                onNavigate?.();
+              }}
+              title={w}
+              aria-label={w}
+              className="mx-auto flex w-full items-center justify-center rounded-tag py-2 transition-colors hover:bg-bubble"
+            >
+              <span
+                className={`h-2 w-2 rounded-full ${
+                  w === workspace ? "bg-brand" : "bg-line"
+                }`}
+              />
+            </button>
+          ))}
+          <button
+            type="button"
+            onClick={pickWorkspace}
+            aria-label="添加工作区"
+            title="添加工作区"
+            className="mx-auto flex w-full items-center justify-center rounded-tag py-2 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+          >
+            <Plus size={14} />
+          </button>
+        </div>
+
+        <div className="px-2 py-2">
+          <button
+            type="button"
+            onClick={onOpenSettings}
+            aria-label="设置"
+            title="设置"
+            className={`mx-auto flex w-full items-center justify-center rounded-tag py-1.5 transition-colors hover:bg-bubble hover:text-foreground ${
+              settingsActive ? "bg-bubble text-foreground" : "text-subtle"
+            }`}
+          >
+            <Settings size={14} />
+          </button>
+        </div>
+      </aside>
+    );
+  }
+
   return (
     <aside className="flex w-64 shrink-0 flex-col border-r border-line">
       <header className="flex items-center gap-2 px-4 py-3">
@@ -70,6 +160,15 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
         <span className="text-base font-semibold tracking-[-0.02em]">
           Aura
         </span>
+        <button
+          type="button"
+          onClick={toggleCollapsed}
+          aria-label="收起侧边栏"
+          title="收起侧边栏"
+          className="ml-auto rounded-tag p-1 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+        >
+          <PanelLeftClose size={14} />
+        </button>
       </header>
 
       <div className="flex items-center justify-between px-4 pb-1">
