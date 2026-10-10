@@ -172,14 +172,14 @@ export function presetById(id: string): ProviderPreset | undefined {
 }
 
 /**
- * 分组标题：用户自定义名优先，回退到预设官方名，最后回退到 provider id。
- * 用户可以把「kimi」改名成「公司 Kimi」，模型列表的分组标题随之更新。
+ * 分组标题：后端已按「用户自定义名优先」解析出 provider_name，
+ * 这里只在其为空时回退到预设官方名，最后回退到 provider id。
  */
 export function providerDisplayName(
   providerId: string,
-  customName: string | undefined,
+  resolvedName?: string | null,
 ): string {
-  const name = customName?.trim();
+  const name = resolvedName?.trim();
   if (name) return name;
   return presetById(providerId)?.label ?? providerId;
 }

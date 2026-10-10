@@ -60,11 +60,12 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
   }, [open]);
 
   const groups = useMemo<ModelGroup[]>(() => {
+    // 对话页模型选择器只展示已收藏模型，按厂商分组
     const out: ModelGroup[] = [];
-    for (const m of models) {
+    for (const m of models.filter((x) => x.pinned)) {
       const last = out[out.length - 1];
       if (last && last.provider === m.provider) last.models.push(m);
-      else out.push({ provider: m.provider, models: [m] });
+      else out.push({ provider: m.provider_name || m.provider, models: [m] });
     }
     return out;
   }, [models]);

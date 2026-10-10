@@ -1,13 +1,15 @@
 import { useEffect, useState, type KeyboardEvent } from "react";
 import { listen } from "@tauri-apps/api/event";
-import { ArrowLeft, Check, Eye, EyeOff, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
+import { ArrowLeft, Check, ChevronRight, Eye, EyeOff, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import {
   getGlobalRules,
   getProviderStatuses,
   getProviders,
   pullOllamaModel,
+  refreshProviderModels,
   setGlobalRules,
+  setPinnedModels,
   setProviders,
   type ProviderConfig,
   type ProviderKind,
@@ -17,6 +19,7 @@ import {
   ALL_PRESETS,
   CUSTOM_PRESET_ID,
   presetById,
+  providerDisplayName,
 } from "../lib/providers";
 import { useStore } from "../store";
 import Select from "../components/Select";
@@ -90,6 +93,17 @@ const LOCAL_PRESETS: { label: string; host: string; port: string; path: string }
 
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const { models, selectedModel, setModel, refreshModels } = useStore();
+  // 已收藏模型按厂商分组（provider_name 已由后端解析为自定义名优先）
+  const pinnedGroups = (() => {
+    const out: { provider: string; models: typeof models }[] = [];
+    for (const m of models.filter((x) => x.pinned)) {
+      const name = m.provider_name || providerDisplayName(m.provider);
+      const last = out[out.length - 1];
+      if (last && last.provider === name) last.models.push(m);
+      else out.push({ provider: name, models: [m] });
+    }
+    return out;
+  })();
   const [section, setSection] = useState<SectionId>("appearance");
   const [rules, setRules] = useState("");
   const [saved, setSaved] = useState(false);
@@ -105,8 +119,19 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   >({});
   const [pulling, setPulling] = useState<Record<string, boolean>>({});
   const [testingConn, setTestingConn] = useState<Record<string, boolean>>({});
-  const [testResults, setTestResults] = useState<Record<string, { ok: boolean; message: string }>>({});
-  const [customModels, setCustomModels] = useState<Record<string, Array<{ id: string; label: string; context_limit: number }>>>({});
+  const [testResults, setTestResults] = useState<
+    Record<string, { ok: boolean; message: string }>
+  >({});
+  const [customModels, setCustomModels] = useState<
+    Record<string, Array<{ id: string; label: string; context_limit: number }>>
+  >({});
+  // 模型目录展开区状态：provider id -> 草稿（勾选的模型 key 集合 + 搜索词）
+  const [catalogOpen, setCatalogOpen] = useState<Record<string, boolean>>({});
+  const [catalogDraft, setCatalogDraft] = useState<Record<string, string[]>>({});
+  const [catalogQuery, setCatalogQuery] = useState<Record<string, string>>({});
+  const [catalogBusy, setCatalogBusy] = useState<Record<string, boolean>>({});
+  const [catalogError, setCatalogError] = useState<Record<string, string>>({});
+  const [catalogSaved, setCatalogSaved] = useState<Record<string, boolean>>({});
 
   useEffect(() => {
     const un = listen<{
@@ -208,6 +233,71 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
       }));
     } finally {
       setTestingConn((t) => ({ ...t, [id]: false }));
+    }
+  }
+
+  /** 展开/收起模型目录；展开时若尚无草稿，用当前已收藏项初始化 */
+  async function toggleCatalog(id: string) {
+    const opening = !catalogOpen[id];
+    setCatalogOpen((m) => ({ ...m, [id]: opening }));
+    if (!opening) return;
+    setCatalogError((e) => ({ ...e, [id]: "" }));
+    if (catalogDraft[id]) return;
+    // 拉取远端目录（新增项默认未收藏）
+    setCatalogBusy((b) => ({ ...b, [id]: true }));
+    try {
+      await refreshProviderModels(id);
+      await refreshModels();
+    } catch (e) {
+      const msg = typeof e === "string" ? e : "获取失败";
+      setCatalogError((x) => ({
+        ...x,
+        [id]: /不支持|404|未实现|not found/i.test(msg)
+          ? "该厂商可能不提供模型列表接口，请手动添加或联系厂商确认"
+          : msg,
+      }));
+    } finally {
+      setCatalogBusy((b) => ({ ...b, [id]: false }));
+    }
+  }
+
+  function togglePin(id: string, key: string) {
+    setCatalogDraft((d) => {
+      const cur = d[id] ?? currentPinnedKeys(id);
+      return {
+        ...d,
+        [id]: cur.includes(key) ? cur.filter((k) => k !== key) : [...cur, key],
+      };
+    });
+  }
+
+  /** 该供应商当前已收藏的模型 key（草稿未建立时的回退值） */
+  function currentPinnedKeys(id: string): string[] {
+    return models.filter((m) => m.provider === id && m.pinned).map((m) => m.key);
+  }
+
+  function draftFor(id: string): string[] {
+    return catalogDraft[id] ?? currentPinnedKeys(id);
+  }
+
+  async function saveCatalog(id: string) {
+    setCatalogBusy((b) => ({ ...b, [id]: true }));
+    setCatalogError((e) => ({ ...e, [id]: "" }));
+    try {
+      await setPinnedModels(id, draftFor(id));
+      await refreshModels();
+      setCatalogSaved((s) => ({ ...s, [id]: true }));
+      window.setTimeout(
+        () => setCatalogSaved((s) => ({ ...s, [id]: false })),
+        1500,
+      );
+    } catch (e) {
+      setCatalogError((x) => ({
+        ...x,
+        [id]: typeof e === "string" ? e : "保存失败",
+      }));
+    } finally {
+      setCatalogBusy((b) => ({ ...b, [id]: false }));
     }
   }
 
@@ -861,6 +951,141 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                               )}
                             </div>
                           )}
+                          {/* 模型目录：获取远端列表 → 搜索勾选收藏 */}
+                          <div className="sm:col-span-2 mt-1">
+                            <button
+                              type="button"
+                              onClick={() => toggleCatalog(p.id)}
+                              disabled={catalogBusy[p.id]}
+                              className="flex w-full items-center justify-between rounded-lg border border-line px-3 py-2 text-xs text-subtle transition-colors hover:bg-bubble hover:text-foreground disabled:opacity-60"
+                            >
+                              <span className="flex items-center gap-2">
+                                {catalogBusy[p.id] ? (
+                                  <RefreshCw size={13} className="animate-spin" />
+                                ) : (
+                                  <ChevronRight
+                                    size={13}
+                                    className={`transition-transform ${catalogOpen[p.id] ? "rotate-90" : ""}`}
+                                  />
+                                )}
+                                获取模型列表
+                              </span>
+                              <span>
+                                {models.filter(
+                                  (m) => m.provider === p.id && m.pinned,
+                                ).length > 0 && (
+                                  <span className="text-subtle">
+                                    已收藏{" "}
+                                    {
+                                      models.filter(
+                                        (m) =>
+                                          m.provider === p.id && m.pinned,
+                                      ).length
+                                    }{" "}
+                                    个
+                                  </span>
+                                )}
+                              </span>
+                            </button>
+
+                            {catalogOpen[p.id] && (
+                              <div className="mt-2 rounded-lg border border-line p-3">
+                                {catalogError[p.id] ? (
+                                  <p className="text-xs text-danger">
+                                    {catalogError[p.id]}
+                                  </p>
+                                ) : (
+                                  <>
+                                    <input
+                                      value={catalogQuery[p.id] ?? ""}
+                                      onChange={(e) =>
+                                        setCatalogQuery((q) => ({
+                                          ...q,
+                                          [p.id]: e.target.value,
+                                        }))
+                                      }
+                                      placeholder="搜索模型…"
+                                      aria-label="搜索模型"
+                                      className="mb-2 w-full rounded-lg border border-line bg-surface px-2.5 py-1.5 text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+                                    />
+                                    {(() => {
+                                      const q = (
+                                        catalogQuery[p.id] ?? ""
+                                      )
+                                        .trim()
+                                        .toLowerCase();
+                                      const list = models.filter(
+                                        (m) =>
+                                          m.provider === p.id &&
+                                          (!q ||
+                                            m.id.toLowerCase().includes(q) ||
+                                            m.label
+                                              .toLowerCase()
+                                              .includes(q)),
+                                      );
+                                      const draft = draftFor(p.id);
+                                      return (
+                                        <>
+                                          <div className="max-h-[240px] overflow-y-auto overscroll-contain space-y-0.5">
+                                            {list.length === 0 ? (
+                                              <p className="py-2 text-center text-xs text-subtle">
+                                                {q ? "无匹配模型" : "暂无模型"}
+                                              </p>
+                                            ) : (
+                                              list.map((m) => {
+                                                const checked =
+                                                  draft.includes(m.key);
+                                                return (
+                                                  <label
+                                                    key={m.key}
+                                                    className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-bubble"
+                                                  >
+                                                    <input
+                                                      type="checkbox"
+                                                      checked={checked}
+                                                      onChange={() =>
+                                                        togglePin(p.id, m.key)
+                                                      }
+                                                      className="accent-[var(--color-brand)]"
+                                                    />
+                                                    <span className="min-w-0 flex-1 truncate">
+                                                      {m.label}
+                                                      <span className="ml-1.5 font-mono text-[10px] text-subtle">
+                                                        {m.id}
+                                                      </span>
+                                                    </span>
+                                                  </label>
+                                                );
+                                              })
+                                            )}
+                                          </div>
+                                          <div className="mt-2 flex items-center justify-between">
+                                            <span className="text-[11px] text-subtle">
+                                              已选 {draft.length} 个
+                                            </span>
+                                            <button
+                                              type="button"
+                                              onClick={() =>
+                                                saveCatalog(p.id)
+                                              }
+                                              disabled={catalogBusy[p.id]}
+                                              className="rounded-full bg-brand px-3 py-1 text-xs text-white transition-colors enabled:hover:bg-brand-strong disabled:opacity-60"
+                                            >
+                                              {catalogSaved[p.id]
+                                                ? "已保存"
+                                                : catalogBusy[p.id]
+                                                  ? "保存中…"
+                                                  : "保存收藏"}
+                                            </button>
+                                          </div>
+                                        </>
+                                      );
+                                    })()}
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     );
@@ -882,46 +1107,61 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                 </div>
 
                 <div className="mt-6 border-t border-line pt-5">
-                  <span className="text-sm font-medium">模型列表</span>
+                  <span className="text-sm font-medium">已收藏模型</span>
                   <p className="mt-1 text-xs text-subtle">
-                    按列表顺序作为降级链：主模型 429 限流或故障时自动切换到下一个可用模型
+                    在上方供应商卡片中点击「获取模型列表」勾选收藏。已收藏模型按厂商分组，
+                    点击即可设为当前模型；降级链按厂商分组内顺序排列
                   </p>
-                  <ul role="listbox" aria-label="模型列表" className="mt-3 space-y-1">
-                    {models.map((m, i) => {
-                      const isActive = m.key === selectedModel;
-                      return (
-                        <li key={m.key}>
-                          <button
-                            type="button"
-                            role="option"
-                            aria-selected={isActive}
-                            onClick={() => {
-                              if (!isActive) setModel(m.key);
-                            }}
-                            className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
-                              isActive ? "bg-bubble" : "hover:bg-bubble"
-                            }`}
-                          >
-                            <span className="w-5 shrink-0 text-xs text-subtle">
-                              {i + 1}
-                            </span>
-                            <span className="min-w-0 flex-1 truncate">
-                              {m.label}
-                              <span className="ml-2 font-mono text-[11px] text-subtle">
-                                {m.id}
-                              </span>
-                            </span>
-                            <span className="shrink-0 rounded-full border border-line bg-surface px-1.5 py-0.5 text-[10px] text-subtle">
-                              {Math.round(m.context_limit / 1024)}K
-                            </span>
-                            <span className="flex w-4 shrink-0 justify-end">
-                              {isActive && <Check size={13} className="text-brand" />}
-                            </span>
-                          </button>
-                        </li>
-                      );
-                    })}
-                  </ul>
+                  {pinnedGroups.length === 0 ? (
+                    <p className="mt-3 rounded-lg border border-dashed border-line px-3 py-4 text-center text-xs text-subtle">
+                      尚未收藏任何模型
+                    </p>
+                  ) : (
+                    <div className="mt-3 space-y-4">
+                      {pinnedGroups.map((g) => (
+                        <div key={g.provider}>
+                          <div className="px-3 pb-1 text-[11px] text-subtle">
+                            {g.provider}
+                          </div>
+                          <ul role="listbox" aria-label={`${g.provider} 模型`} className="space-y-1">
+                            {g.models.map((m) => {
+                              const isActive = m.key === selectedModel;
+                              return (
+                                <li key={m.key}>
+                                  <button
+                                    type="button"
+                                    role="option"
+                                    aria-selected={isActive}
+                                    onClick={() => {
+                                      if (!isActive) setModel(m.key);
+                                    }}
+                                    className={`flex w-full items-center gap-3 rounded-lg px-3 py-2 text-left text-sm transition-colors ${
+                                      isActive ? "bg-bubble" : "hover:bg-bubble"
+                                    }`}
+                                  >
+                                    <span className="min-w-0 flex-1 truncate">
+                                      {m.label}
+                                      <span className="ml-2 font-mono text-[11px] text-subtle">
+                                        {m.id}
+                                      </span>
+                                    </span>
+                                    <span className="shrink-0 rounded-full border border-line bg-surface px-1.5 py-0.5 text-[10px] text-subtle">
+                                      {Math.round(m.context_limit / 1024)}K
+                                    </span>
+                                    <span className="flex w-4 shrink-0 justify-end">
+                                      {isActive && (
+                                        <Check size={13} className="text-brand" />
+                                      )}
+                                    </span>
+                                  </button>
+                                </li>
+                              );
+                            })}
+                          </ul>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               </section>
             )}
