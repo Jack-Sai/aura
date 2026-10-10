@@ -5,6 +5,8 @@ import { useStore } from "../store";
 
 interface Props {
   onOpenSettings: () => void;
+  /** 选中会话/工作区后回调，用于从设置页切回对话视图 */
+  onNavigate?: () => void;
   settingsActive?: boolean;
 }
 
@@ -13,7 +15,7 @@ function basename(p: string): string {
   return parts[parts.length - 1] ?? p;
 }
 
-export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
+export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: Props) {
   const {
     workspaces,
     workspace,
@@ -110,7 +112,10 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => switchWorkspace(w)}
+                  onClick={() => {
+                    switchWorkspace(w);
+                    onNavigate?.();
+                  }}
                   title={w}
                   className="flex min-w-0 flex-1 items-center gap-2 py-1.5 text-left text-sm"
                 >
@@ -129,7 +134,10 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                 </button>
                 <button
                   type="button"
-                  onClick={() => newSession(w)}
+                  onClick={() => {
+                    newSession(w);
+                    onNavigate?.();
+                  }}
                   aria-label="在此工作区新建对话"
                   className="mr-1 rounded-tag p-1 text-subtle opacity-0 transition-all hover:bg-surface hover:text-foreground group-hover:opacity-100"
                 >
@@ -171,7 +179,10 @@ export default function Sidebar({ onOpenSettings, settingsActive }: Props) {
                         ) : (
                           <button
                             type="button"
-                            onClick={() => openSession(s.id)}
+                            onClick={() => {
+                              openSession(s.id);
+                              onNavigate?.();
+                            }}
                             className="min-w-0 flex-1 truncate px-2 py-1.5 text-left text-sm"
                           >
                             {s.title}

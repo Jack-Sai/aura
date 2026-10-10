@@ -115,6 +115,7 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
         <Sidebar
           settingsActive={view === "settings"}
           onOpenSettings={() => setView("settings")}
+          onNavigate={() => setView("chat")}
         />
 
         <main className="flex min-w-0 flex-1 flex-col">
