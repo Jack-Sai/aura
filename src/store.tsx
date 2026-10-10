@@ -95,6 +95,18 @@ function deriveTitle(text: string): string {
   return t.length > 20 ? `${t.slice(0, 20)}…` : t;
 }
 
+/**
+ * 选定某工作区应激活的会话：优先未发送消息的空对话（与「新建对话」语义一致），
+ * 否则取最近更新的一个。sessions 从数据库加载时按 updated_at DESC 排列，故首项最新。
+ */
+function pickSessionInWorkspace(
+  sessions: Session[],
+  ws: string,
+): Session | undefined {
+  const inWs = sessions.filter((x) => x.workspace === ws);
+  return inWs.find((x) => x.messages.length === 0) ?? inWs[0];
+}
+
 function mergeText(blocks: Block[], text: string): Block[] {
   const last = blocks[blocks.length - 1];
   if (last && last.kind === "text") {
@@ -277,19 +289,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       .then(([rawWs, saved, models, selectedModel]) => {
         const ws = normWs(rawWs);
         setState((s) => {
-          const restored: Session[] = saved.map((x) => ({
-            id: x.id,
-            title: x.title,
-            workspace: normWs(x.workspace),
-            messages: x.messages,
-          }));
+          // 过滤历史脏行（工作区为空），避免侧边栏出现空白工作区分组；
+          // 每工作区最多保留一个空对话，多余的丢弃
+          const blankSeen = new Set<string>();
+          const restored: Session[] = saved
+            .map((x) => ({
+              id: x.id,
+              title: x.title,
+              workspace: normWs(x.workspace),
+              messages: x.messages,
+            }))
+            .filter((r) => {
+              if (!r.workspace) return false;
+              if (r.messages.length > 0) return true;
+              if (blankSeen.has(r.workspace)) return false;
+              blankSeen.add(r.workspace);
+              return true;
+            });
           const workspaces = [ws, ...restored.map((r) => r.workspace), ...s.workspaces]
             .map(normWs)
             .filter((w, i, arr) => arr.indexOf(w) === i);
           let sessions = restored;
           let activeId = "";
-          const active = restored.find((r) => r.workspace === ws) ?? restored[0];
-          if (active) activeId = active.id;
+          const picked =
+            pickSessionInWorkspace(restored, ws) ?? restored[0];
+          if (picked) activeId = picked.id;
           if (!sessions.some((x) => x.id === activeId)) {
             const ns = createSession(ws);
             sessions = [...sessions, ns];
@@ -409,9 +433,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       let activeId = s.activeId;
       const active = sessions.find((x) => x.id === activeId);
       if (!active || active.workspace !== canonical) {
-        const inWs = sessions.filter((x) => x.workspace === canonical);
-        if (inWs.length > 0) {
-          activeId = inWs[inWs.length - 1].id;
+        const picked = pickSessionInWorkspace(sessions, canonical);
+        if (picked) {
+          activeId = picked.id;
         } else {
           const ns = createSession(canonical);
           sessions = [...sessions, ns];
@@ -432,6 +456,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     }
     setState((s) => {
+      // 每个工作区只保留一个空对话：已有空对话则直接聚焦，不重复创建，
+      // 避免工作区被「新对话」挤满
+      const blank = s.sessions.find(
+        (x) => x.workspace === ws && x.messages.length === 0,
+      );
+      if (blank) {
+        return { ...s, workspace: ws, activeId: blank.id };
+      }
       const ns = createSession(ws);
       return {
         ...s,
@@ -465,9 +497,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       let sessions = s.sessions.filter((x) => x.id !== id);
       let activeId = s.activeId;
       if (activeId === id) {
-        const inWs = sessions.filter((x) => x.workspace === s.workspace);
-        if (inWs.length > 0) {
-          activeId = inWs[inWs.length - 1].id;
+        const picked = pickSessionInWorkspace(sessions, s.workspace);
+        if (picked) {
+          activeId = picked.id;
         } else {
           const ns = createSession(s.workspace);
           sessions = [...sessions, ns];

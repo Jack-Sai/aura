@@ -62,6 +62,13 @@ fn home_dir() -> Option<PathBuf> {
 
 impl AppState {
     pub fn new(env_api_key: Option<String>, db: Connection) -> Self {
+        // 启动时清理空会话：保证每个工作区最多只留一个「未发送消息」的空对话，
+        // 且不会因历史脏行在侧边栏出现空白工作区分组
+        if let Ok(n) = db::purge_empty_sessions(&db) {
+            if n > 0 {
+                eprintln!("[aura] 已清理 {} 个空会话", n);
+            }
+        }
         // 优先恢复上次使用的工作区；无记录（首次运行）时回退到用户主目录，
         // 避免以进程启动目录（如 src-tauri）作为工作区凭空出现
         let workspace = db::get_setting(&db, "last_workspace")

@@ -102,6 +102,11 @@ pub fn save_session(
     Ok(())
 }
 
+/// 仅更新 agent 历史，绝不插入会话行。
+///
+/// 历史行由前端 `save_session` 负责创建（携带真实 title/workspace）；
+/// 这里若用 INSERT OR IGNORE 会写入 `title=''`、`workspace=''` 的脏行，
+/// 导致下次启动侧边栏多出��空白工作区分组。
 pub fn save_history(
     conn: &Connection,
     id: &str,
@@ -109,10 +114,6 @@ pub fn save_history(
     model_idx: usize,
 ) -> Result<(), rusqlite::Error> {
     let json = serde_json::to_string(history).map_err(json_err)?;
-    conn.execute(
-        "INSERT OR IGNORE INTO sessions (id, title, workspace, updated_at) VALUES (?1, '', '', 0)",
-        params![id],
-    )?;
     conn.execute(
         "UPDATE sessions SET history_json = ?2, model_idx = ?3 WHERE id = ?1",
         params![id, json, model_idx as i64],
@@ -171,6 +172,25 @@ pub fn load_sessions(conn: &Connection) -> Result<Vec<SavedSession>, rusqlite::E
         });
     }
     Ok(out)
+}
+
+/// 物理删除空会话：没有任何消息，或工作区字段为空（历史脏数据）。
+/// 返回被删除的行数。启动时调用一次，保证侧边栏不被空对话挤满。
+pub fn purge_empty_sessions(conn: &Connection) -> Result<usize, rusqlite::Error> {
+    conn.execute(
+        "DELETE FROM messages WHERE session_id IN (
+            SELECT s.id FROM sessions s
+            LEFT JOIN messages m ON m.session_id = s.id
+            WHERE s.workspace = '' OR m.session_id IS NULL
+         )",
+        [],
+    )?;
+    let removed = conn.execute(
+        "DELETE FROM sessions WHERE workspace = ''
+         OR id NOT IN (SELECT DISTINCT session_id FROM messages)",
+        [],
+    )?;
+    Ok(removed)
 }
 
 pub fn delete_session(conn: &Connection, id: &str) -> Result<(), rusqlite::Error> {
@@ -255,6 +275,70 @@ mod tests {
         delete_session(&conn, "s1").unwrap();
         assert!(load_sessions(&conn).unwrap().is_empty());
         assert!(load_history(&conn, "s1").unwrap().is_none());
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn purge_removes_empty_and_dirty_sessions_only() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "purge"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("t.db")).unwrap();
+
+        let msg = serde_json::json!({ "id": "m1", "role": "user", "content": "hi" });
+        // 有消息：保留
+        save_session(&conn, "keep", "正常对话", "E:/dev/aura", &[msg]).unwrap();
+        // 无消息：应清除
+        save_session(&conn, "blank", "新对话", "E:/dev/aura", &[]).unwrap();
+        // 模拟 save_history 历史脏行（workspace 为空）
+        conn.execute(
+            "INSERT OR IGNORE INTO sessions (id, title, workspace, updated_at) VALUES ('dirty','',' ', 0)",
+            [],
+        )
+        .unwrap();
+
+        assert_eq!(load_sessions(&conn).unwrap().len(), 3);
+        let removed = purge_empty_sessions(&conn).unwrap();
+        assert_eq!(removed, 2);
+
+        let left = load_sessions(&conn).unwrap();
+        assert_eq!(left.len(), 1);
+        assert_eq!(left[0].id, "keep");
+
+        // 幂等：再次清理不应删掉任何东西
+        assert_eq!(purge_empty_sessions(&conn).unwrap(), 0);
+        assert_eq!(load_sessions(&conn).unwrap().len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_history_never_creates_session_row() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "history"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("t.db")).unwrap();
+
+        // 会话行不存在时，save_history 不应凭空插入空 title/workspace 的行
+        save_history(&conn, "ghost", &[serde_json::json!({"role":"user"})], 0).unwrap();
+        assert!(load_sessions(&conn).unwrap().is_empty());
+
+        // 行存在时正常更新，且不破坏原有 title/workspace
+        save_session(&conn, "s1", "标题", "E:/dev/aura", &[]).unwrap();
+        save_history(&conn, "s1", &[serde_json::json!({"role":"user"})], 2).unwrap();
+        let (hist, idx) = load_history(&conn, "s1").unwrap().unwrap();
+        assert_eq!(hist.len(), 1);
+        assert_eq!(idx, 2);
+        let loaded = load_sessions(&conn).unwrap();
+        assert_eq!(loaded[0].title, "标题");
+        assert_eq!(loaded[0].workspace, "E:/dev/aura");
 
         std::fs::remove_dir_all(&dir).ok();
     }
