@@ -3,6 +3,7 @@ import { listen } from "@tauri-apps/api/event";
 import { ArrowLeft, Check, ChevronRight, Eye, EyeOff, Plus, RefreshCw, Trash2, Zap } from "lucide-react";
 import type { Theme } from "../hooks/useTheme";
 import {
+  fetchRemoteModels,
   getGlobalRules,
   getProviderStatuses,
   getProviders,
@@ -14,6 +15,7 @@ import {
   type ProviderConfig,
   type ProviderKind,
   type ProviderStatus,
+  type RemoteModel,
 } from "../lib/api";
 import {
   ALL_PRESETS,
@@ -128,6 +130,9 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   // 模型目录展开区状态：provider id -> 草稿（勾选的模型 key 集合 + 搜索词）
   const [catalogOpen, setCatalogOpen] = useState<Record<string, boolean>>({});
   const [catalogDraft, setCatalogDraft] = useState<Record<string, string[]>>({});
+  const [catalogList, setCatalogList] = useState<
+    Record<string, RemoteModel[]>
+  >({});
   const [catalogQuery, setCatalogQuery] = useState<Record<string, string>>({});
   const [catalogBusy, setCatalogBusy] = useState<Record<string, boolean>>({});
   const [catalogError, setCatalogError] = useState<Record<string, string>>({});
@@ -236,28 +241,37 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     }
   }
 
-  /** 展开/收起模型目录；展开时若尚无草稿，用当前已收藏项初始化 */
-  async function toggleCatalog(id: string) {
-    const opening = !catalogOpen[id];
-    setCatalogOpen((m) => ({ ...m, [id]: opening }));
+  /**
+   * 展开/收起模型目录。展开时按**当前卡片草稿配置**拉取远端模型列表——
+   * 用户刚切换厂商还没点「保存」，此时后端内存里仍是旧厂商，
+   * 若走 refresh_provider_models 无论选哪家都只会拉到 OpenRouter 的模型。
+   */
+  async function toggleCatalog(index: number) {
+    const p = providers[index];
+    if (!p) return;
+    const opening = !catalogOpen[p.id];
+    setCatalogOpen((m) => ({ ...m, [p.id]: opening }));
     if (!opening) return;
-    setCatalogError((e) => ({ ...e, [id]: "" }));
-    if (catalogDraft[id]) return;
-    // 拉取远端目录（新增项默认未收藏）
-    setCatalogBusy((b) => ({ ...b, [id]: true }));
+    setCatalogError((e) => ({ ...e, [p.id]: "" }));
+    setCatalogBusy((b) => ({ ...b, [p.id]: true }));
     try {
-      await refreshProviderModels(id);
-      await refreshModels();
+      const list = await fetchRemoteModels(p);
+      setCatalogList((l) => ({ ...l, [p.id]: list }));
+      // 草稿初始 = 该供应商当前已收藏的模型
+      setCatalogDraft((d) => ({
+        ...d,
+        [p.id]: currentPinnedKeys(p.id),
+      }));
     } catch (e) {
       const msg = typeof e === "string" ? e : "获取失败";
       setCatalogError((x) => ({
         ...x,
-        [id]: /不支持|404|未实现|not found/i.test(msg)
-          ? "该厂商可能不提供模型列表接口，请手动添加或联系厂商确认"
+        [p.id]: /不支持|404|未实现|not found|method not allowed/i.test(msg)
+          ? `${msg}。该厂商可能不提供模型列表接口，请手动添加模型`
           : msg,
       }));
     } finally {
-      setCatalogBusy((b) => ({ ...b, [id]: false }));
+      setCatalogBusy((b) => ({ ...b, [p.id]: false }));
     }
   }
 
@@ -280,24 +294,37 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     return catalogDraft[id] ?? currentPinnedKeys(id);
   }
 
-  async function saveCatalog(id: string) {
-    setCatalogBusy((b) => ({ ...b, [id]: true }));
-    setCatalogError((e) => ({ ...e, [id]: "" }));
+  /**
+   * 保存收藏。三步顺序不可颠倒：
+   * 1) 先把本地拉取到的模型并入配置（pinned=false）
+   * 2) 再保存供应商配置（接口地址/密钥），确保按 id 找得到执行器
+   * 3) 最后写入收藏状态
+   */
+  async function saveCatalog(index: number) {
+    const p = providers[index];
+    if (!p) return;
+    const keys = draftFor(p.id);
+    setCatalogBusy((b) => ({ ...b, [p.id]: true }));
+    setCatalogError((e) => ({ ...e, [p.id]: "" }));
     try {
-      await setPinnedModels(id, draftFor(id));
+      if ((catalogList[p.id] ?? []).length > 0) {
+        await refreshProviderModels(p.id);
+      }
+      await persistProviders();
+      await setPinnedModels(p.id, keys);
       await refreshModels();
-      setCatalogSaved((s) => ({ ...s, [id]: true }));
+      setCatalogSaved((s) => ({ ...s, [p.id]: true }));
       window.setTimeout(
-        () => setCatalogSaved((s) => ({ ...s, [id]: false })),
+        () => setCatalogSaved((s) => ({ ...s, [p.id]: false })),
         1500,
       );
     } catch (e) {
       setCatalogError((x) => ({
         ...x,
-        [id]: typeof e === "string" ? e : "保存失败",
+        [p.id]: typeof e === "string" ? e : "保存失败",
       }));
     } finally {
-      setCatalogBusy((b) => ({ ...b, [id]: false }));
+      setCatalogBusy((b) => ({ ...b, [p.id]: false }));
     }
   }
 
@@ -421,6 +448,12 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
     }
     setProvError("");
     setProvidersState(providers.filter((p) => p.id !== id));
+  }
+
+  /** 持久化供应商配置并刷新模型列表；不重载页面 */
+  async function persistProviders(): Promise<void> {
+    await setProviders(providers);
+    await refreshModels();
   }
 
   async function saveProviders() {
@@ -955,7 +988,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                           <div className="sm:col-span-2 mt-1">
                             <button
                               type="button"
-                              onClick={() => toggleCatalog(p.id)}
+                              onClick={() => toggleCatalog(i)}
                               disabled={catalogBusy[p.id]}
                               className="flex w-full items-center justify-between rounded-lg border border-line px-3 py-2 text-xs text-subtle transition-colors hover:bg-bubble hover:text-foreground disabled:opacity-60"
                             >
@@ -1014,37 +1047,48 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                       )
                                         .trim()
                                         .toLowerCase();
-                                      const list = models.filter(
+                                      const all = catalogList[p.id] ?? [];
+                                      const list = all.filter(
                                         (m) =>
-                                          m.provider === p.id &&
-                                          (!q ||
-                                            m.id.toLowerCase().includes(q) ||
-                                            m.label
-                                              .toLowerCase()
-                                              .includes(q)),
+                                          !q ||
+                                          m.id.toLowerCase().includes(q) ||
+                                          m.label
+                                            .toLowerCase()
+                                            .includes(q),
                                       );
                                       const draft = draftFor(p.id);
+                                      const keyOf = (m: RemoteModel) =>
+                                        `${p.id}:${m.id}`;
                                       return (
                                         <>
                                           <div className="max-h-[240px] overflow-y-auto overscroll-contain space-y-0.5">
-                                            {list.length === 0 ? (
+                                            {all.length === 0 ? (
                                               <p className="py-2 text-center text-xs text-subtle">
-                                                {q ? "无匹配模型" : "暂无模型"}
+                                                该厂商未返回可用模型
+                                              </p>
+                                            ) : list.length === 0 ? (
+                                              <p className="py-2 text-center text-xs text-subtle">
+                                                无匹配模型
                                               </p>
                                             ) : (
                                               list.map((m) => {
                                                 const checked =
-                                                  draft.includes(m.key);
+                                                  draft.includes(
+                                                    keyOf(m),
+                                                  );
                                                 return (
                                                   <label
-                                                    key={m.key}
+                                                    key={keyOf(m)}
                                                     className="flex cursor-pointer items-center gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-bubble"
                                                   >
                                                     <input
                                                       type="checkbox"
                                                       checked={checked}
                                                       onChange={() =>
-                                                        togglePin(p.id, m.key)
+                                                        togglePin(
+                                                          p.id,
+                                                          keyOf(m),
+                                                        )
                                                       }
                                                       className="accent-[var(--color-brand)]"
                                                     />
@@ -1066,7 +1110,7 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                                             <button
                                               type="button"
                                               onClick={() =>
-                                                saveCatalog(p.id)
+                                                saveCatalog(i)
                                               }
                                               disabled={catalogBusy[p.id]}
                                               className="rounded-full bg-brand px-3 py-1 text-xs text-white transition-colors enabled:hover:bg-brand-strong disabled:opacity-60"

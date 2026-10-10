@@ -147,6 +147,23 @@ export function refreshProviderModels(provider: string): Promise<number> {
   return invoke("refresh_provider_models", { provider });
 }
 
+/** 从厂商远端拉取到的模型描述 */
+export interface RemoteModel {
+  id: string;
+  label: string;
+  context_limit: number;
+}
+
+/**
+ * 按草稿配置拉取厂商远端模型列表（只读，不写入任何持久化状态）。
+ * 用户切换厂商后无需先点「保存」即可预览该厂商可用模型。
+ */
+export function fetchRemoteModels(
+  draft: ProviderConfig,
+): Promise<RemoteModel[]> {
+  return invoke("fetch_remote_models", { draft });
+}
+
 /** Ollama 模型拉取（进度经 `ollama_pull` 事件推送），返回新增模型数。 */
 export function pullOllamaModel(provider: string, model: string): Promise<number> {
   return invoke("pull_ollama_model", { provider, model });

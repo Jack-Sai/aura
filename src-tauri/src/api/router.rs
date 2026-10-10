@@ -29,7 +29,11 @@ struct ChainEntry {
     label: String,
 }
 
-fn build_executor(p: &ProviderConfig) -> CompatProvider {
+/// 按 `ProviderConfig` 现场构造执行器。
+///
+/// 供 Router 构建执行器表使用；同时对设置页开放——用户切换厂商后
+/// 尚未保存时，也可用草稿配置拉取该厂商的模型列表。
+pub(crate) fn build_executor(p: &ProviderConfig) -> CompatProvider {
     let key = {
         let k = p.api_key.trim();
         if k.is_empty() {

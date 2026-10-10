@@ -84,11 +84,12 @@ impl AppState {
             .flatten()
             .unwrap_or_default();
         let mut config = load_config(&db);
-        // 环境变量作为 OpenRouter API Key 兜底（配置为空时）
+        // 环境变量作为 OpenRouter API Key 兜底（仅当该供应商未填 key 且地址为 openrouter.ai）
         if let Some(env_key) = env_api_key {
-            if let Some(p) = config.providers.iter_mut().find(|p| p.id == "openrouter") {
-                if p.api_key.trim().is_empty() {
-                    p.api_key = env_key;
+            for p in config.providers.iter_mut() {
+                if p.api_key.trim().is_empty() && p.base_url.contains("openrouter.ai") {
+                    p.api_key = env_key.clone();
+                    break;
                 }
             }
         }
@@ -457,6 +458,26 @@ pub async fn refresh_provider_models(
     Ok(added)
 }
 
+/// 按**草稿配置**拉取厂商的远端模型列表，只读不写任何持久化状态。
+///
+/// 供设置页在用户切换厂商但尚未点击「保存」时预览可用模型。
+/// 若改走已保存的 `refresh_provider_models`，内存态 Router 仍是切换前的旧厂商，
+/// 会导致「无论选哪家都拉到 OpenRouter 的模型」。
+#[tauri::command]
+pub async fn fetch_remote_models(
+    draft: ProviderConfig,
+) -> Result<Vec<crate::api::RemoteModel>, String> {
+    use crate::api::ChatProvider;
+    if draft.base_url.trim().is_empty() {
+        return Err("请先填写接口地址".into());
+    }
+    let exec = crate::api::build_executor(&draft);
+    if !exec.ready() {
+        return Err("请先填写 API Key".into());
+    }
+    exec.list_models().await.map_err(|e| e.to_string())
+}
+
 /// 设置某供应商的模型收藏：传入完整的已收藏模型 key 列表（幂等覆盖）。
 #[tauri::command]
 pub fn set_pinned_models(
@@ -573,14 +594,11 @@ pub async fn pull_ollama_model(
 #[tauri::command]
 pub fn get_api_config(state: State<'_, AppState>) -> ApiConfig {
     let cfg = state.router.config();
+    // 取第一个启用的供应商，不再硬编码 OpenRouter
+    let target = cfg.providers.iter().find(|p| p.enabled);
     ApiConfig {
-        provider: "openrouter".to_string(),
-        api_key: cfg
-            .providers
-            .iter()
-            .find(|p| p.id == "openrouter")
-            .map(|p| p.api_key.clone())
-            .unwrap_or_default(),
+        provider: target.map(|p| p.id.clone()).unwrap_or_default(),
+        api_key: target.map(|p| p.api_key.clone()).unwrap_or_default(),
     }
 }
 
@@ -590,20 +608,28 @@ pub fn set_api_config(
     provider: String,
     api_key: String,
 ) -> Result<(), String> {
-    if provider != "openrouter" {
-        return Err("暂只支持 OpenRouter".to_string());
-    }
     let key = api_key.trim().to_string();
-    let effective = if key.is_empty() {
+    // provider 为空或不存在时，回落到第一个启用的供应商
+    let target_id = {
+        let cfg = state.router.config();
+        cfg.providers
+            .iter()
+            .find(|p| p.id == provider)
+            .or_else(|| cfg.providers.iter().find(|p| p.enabled))
+            .map(|p| p.id.clone())
+            .ok_or_else(|| "尚未配置模型供应商".to_string())?
+    };
+    // 环境变量仅对 OpenRouter 保留历史兜底（该 provider 的 id 恰为 openrouter）
+    let effective = if key.is_empty() && target_id == "openrouter" {
         std::env::var("OPENROUTER_API_KEY")
             .ok()
             .filter(|k| !k.trim().is_empty())
     } else {
         Some(key.clone())
     };
-    state.router.set_provider_key("openrouter", effective);
+    state.router.set_provider_key(&target_id, effective);
     let mut cfg = state.router.config();
-    if let Some(p) = cfg.providers.iter_mut().find(|p| p.id == "openrouter") {
+    if let Some(p) = cfg.providers.iter_mut().find(|p| p.id == target_id) {
         // 持久化原始输入（空串=清除）；环境变量仅作运行时兜底
         p.api_key = key;
     }
