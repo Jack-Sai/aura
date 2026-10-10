@@ -13,8 +13,12 @@ export interface ModelInfo {
   /** `{provider}:{id}` 复合 key（选中/切换主键） */
   key: string;
   provider: string;
+  /** 供应商展示名（用户自定义名优先），用于分组标题 */
+  provider_name: string;
   label: string;
   context_limit: number;
+  /** 是否已收藏；未收藏仅在设置页可选目录中出现 */
+  pinned: boolean;
 }
 
 export function sendMessage(sessionId: string, message: string): Promise<void> {
@@ -60,6 +64,14 @@ export function setGlobalRules(rules: string): Promise<void> {
 
 export function getModels(): Promise<ModelInfo[]> {
   return invoke("get_models");
+}
+
+/** 设置某供应商的模型收藏（传入完整已收藏 key 列表，幂等覆盖）。 */
+export function setPinnedModels(
+  provider: string,
+  keys: string[],
+): Promise<number> {
+  return invoke("set_pinned_models", { provider, keys });
 }
 
 export function getSelectedModel(): Promise<string> {

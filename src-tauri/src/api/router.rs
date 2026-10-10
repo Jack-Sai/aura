@@ -194,7 +194,7 @@ impl Router {
                     .find(|p| p.id == m.provider)
                     .map(|p| p.enabled)
                     .unwrap_or(false);
-                if !m.enabled || !provider_enabled {
+                if !m.enabled || !m.pinned || !provider_enabled {
                     return None;
                 }
                 Some(ChainEntry {
@@ -378,6 +378,7 @@ mod tests {
             label: "Qwen3-0.6b".into(),
             context_limit: 32768,
             enabled: true,
+            pinned: true,
             tags: vec![],
         });
         cfg.providers.push(ollama_provider());
@@ -402,6 +403,7 @@ mod tests {
             label: "Qwen3-0.6b".into(),
             context_limit: 32768,
             enabled: true,
+            pinned: true,
             tags: vec![],
         });
         cfg.providers.push(ollama_provider());
@@ -489,6 +491,7 @@ mod tests {
             label: "Qwen3 0.6B".into(),
             context_limit: 8192,
             enabled: true,
+            pinned: true,
             tags: vec!["local".into()],
         });
         cfg.providers.push(ProviderConfig {
@@ -540,6 +543,7 @@ mod tests {
             label: "Bad Model".into(),
             context_limit: 4096,
             enabled: true,
+            pinned: true,
             tags: vec![],
         });
         cfg.selected = model_key("badcloud", "bad-model");

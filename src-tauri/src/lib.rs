@@ -8,7 +8,7 @@ use commands::{
     get_api_config, get_global_rules, get_models, get_provider_statuses, get_providers,
     get_selected_model, get_workspace, load_sessions, pull_ollama_model, refresh_provider_models,
     remove_session, remove_workspace, save_session, send_message, set_api_config, set_global_rules,
-    set_providers, set_selected_model, set_workspace, stop_message, AppState,
+    set_pinned_models, set_providers, set_selected_model, set_workspace, stop_message, AppState,
 };
 use tauri::Manager;
 
@@ -100,6 +100,7 @@ pub fn run() {
             set_providers,
             get_provider_statuses,
             refresh_provider_models,
+            set_pinned_models,
             pull_ollama_model,
             remove_workspace
         ])

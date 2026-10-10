@@ -257,8 +257,12 @@ pub struct ModelInfo {
     /// `{provider}:{id}` 复合 key（前端选中/切换主键）
     pub key: String,
     pub provider: String,
+    /// 供应商展示名（用户自定义优先），用于模型列表分组标题
+    pub provider_name: String,
     pub label: String,
     pub context_limit: usize,
+    /// 是否已收藏；未收藏的仅出现在设置页可选目录中
+    pub pinned: bool,
 }
 
 #[tauri::command]
@@ -271,8 +275,16 @@ pub fn get_models(state: State<'_, AppState>) -> Vec<ModelInfo> {
             id: m.id.clone(),
             key: m.key(),
             provider: m.provider.clone(),
+            provider_name: cfg
+                .providers
+                .iter()
+                .find(|p| p.id == m.provider)
+                .map(|p| p.name.clone())
+                .filter(|n| !n.trim().is_empty())
+                .unwrap_or_else(|| m.provider.clone()),
             label: m.label.clone(),
             context_limit: m.context_limit,
+            pinned: m.pinned,
         })
         .collect()
 }
@@ -411,7 +423,12 @@ pub async fn get_provider_statuses(
 }
 
 /// 拉取供应商远端模型列表合并进配置；返回新增模型数。
-/// Ollama 通过 `/api/tags` 把本地已安装模型注入模型下拉。
+///
+/// 新增条目默认 **未收藏**（`pinned = false`），仅作为可选目录出现在设置页，
+/// 用户勾选后才进入降级链。避免 OpenRouter 这类 300+ 模型库
+/// 一并进入降级链，主模型故障时连续请求上百个模型。
+///
+/// 部分厂商不提供模型列表端点，此时返回错误由前端降级提示手动添加。
 #[tauri::command]
 pub async fn refresh_provider_models(
     state: State<'_, AppState>,
@@ -431,12 +448,32 @@ pub async fn refresh_provider_models(
         Vec::new()
     };
     let mut cfg = state.router.config();
-    let added = crate::api::config::merge_remote_models(&mut cfg, &provider, remote, &tags);
+    let added =
+        crate::api::config::merge_remote_models(&mut cfg, &provider, remote, &tags, false);
     let cfg = normalize(cfg);
     state.router.set_config(cfg.clone());
     let db = state.db.lock().map_err(lock_err)?;
     save_config(&db, &cfg)?;
     Ok(added)
+}
+
+/// 设置某供应商的模型收藏：传入完整的已收藏模型 key 列表（幂等覆盖）。
+#[tauri::command]
+pub fn set_pinned_models(
+    state: State<'_, AppState>,
+    provider: String,
+    keys: Vec<String>,
+) -> Result<usize, String> {
+    if state.router.config().providers.iter().all(|p| p.id != provider) {
+        return Err(format!("供应商不存在：{}", provider));
+    }
+    let mut cfg = state.router.config();
+    let count = crate::api::config::set_pinned(&mut cfg, &provider, &keys);
+    let cfg = normalize(cfg);
+    state.router.set_config(cfg.clone());
+    let db = state.db.lock().map_err(lock_err)?;
+    save_config(&db, &cfg)?;
+    Ok(count)
 }
 
 /// 解析 Ollama `/api/pull` NDJSON 行 → (状态文案, 百分比)。
@@ -507,7 +544,20 @@ pub async fn pull_ollama_model(
         }
     }
 
-    let added = refresh_provider_models(state, provider.clone()).await?;
+    let added = refresh_provider_models(state.clone(), provider.clone()).await?;
+    // 用户主动拉取的模型视为已收藏：无需再勾选即可直接使用
+    let mut cfg = state.router.config();
+    for m in cfg.models.iter_mut() {
+        if m.provider == provider && m.id == model {
+            m.pinned = true;
+        }
+    }
+    let cfg = normalize(cfg);
+    state.router.set_config(cfg.clone());
+    {
+        let db = state.db.lock().map_err(lock_err)?;
+        save_config(&db, &cfg)?;
+    }
     let _ = app.emit(
         "ollama_pull",
         serde_json::json!({

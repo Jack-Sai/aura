@@ -7,19 +7,26 @@ use super::sse::ChatStream;
 
 /// Provider 分类：决定 URL 拼装、鉴权方式、探测端点与提示策略。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
-#[serde(rename_all = "snake_case")]
+// 必须逐变体显式指定：默认 snake_case 会把 OpenRouter 写成 `open_router`，
+// 与前端使用的 `openrouter` 不一致，配置将无法反序列化
 pub enum ProviderKind {
     /// OpenRouter 云端
+    #[serde(rename = "openrouter")]
     OpenRouter,
     /// OpenAI 官方或任意 OpenAI 兼容端点
+    #[serde(rename = "openai")]
     OpenAi,
     /// Azure OpenAI（api-key 头 + deployment URL）
+    #[serde(rename = "azure")]
     Azure,
     /// Ollama 本地部署
+    #[serde(rename = "ollama")]
     Ollama,
     /// llama.cpp server
+    #[serde(rename = "llama_cpp")]
     LlamaCpp,
     /// 用户自定义 OpenAI 兼容端点
+    #[serde(rename = "custom")]
     Custom,
 }
 
@@ -215,5 +222,24 @@ mod tests {
         assert_eq!(json, "\"llama_cpp\"");
         let back: ProviderKind = serde_json::from_str(&json).unwrap();
         assert_eq!(back, k);
+
+        // 与前端 ProviderKind 联合类型的取值逐一对应
+        for (raw, expected) in [
+            ("\"openrouter\"", ProviderKind::OpenRouter),
+            ("\"openai\"", ProviderKind::OpenAi),
+            ("\"azure\"", ProviderKind::Azure),
+            ("\"ollama\"", ProviderKind::Ollama),
+            ("\"llama_cpp\"", ProviderKind::LlamaCpp),
+            ("\"custom\"", ProviderKind::Custom),
+        ] {
+            let back: ProviderKind = serde_json::from_str(raw).unwrap();
+            assert_eq!(back, expected, "反序列化 {}", raw);
+            assert_eq!(serde_json::to_string(&back).unwrap(), raw);
+        }
+        // 曾经的回归点：默认 snake_case 会产出 open_router 导致配置无法回读
+        assert_ne!(
+            serde_json::to_string(&ProviderKind::OpenRouter).unwrap(),
+            "\"open_router\""
+        );
     }
 }

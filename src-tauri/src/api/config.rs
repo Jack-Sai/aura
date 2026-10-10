@@ -48,6 +48,10 @@ fn default_true() -> bool {
 }
 
 /// 单个可选模型；`models` 数组顺序即降级链顺序。
+///
+/// 远端拉取的模型默认 `pinned = false`（仅作为可选目录），用户勾选「收藏」
+/// 后才置为 true 并进入降级链与对话页模型列表。
+/// 旧配置无此字段时 serde 默认 true，即历史用户的所有模型都是已收藏。
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct ModelConfig {
     pub provider: String,
@@ -56,6 +60,9 @@ pub struct ModelConfig {
     pub context_limit: usize,
     #[serde(default = "default_true")]
     pub enabled: bool,
+    /// 是否已收藏（用户主动勾选）。
+    #[serde(default = "default_true")]
+    pub pinned: bool,
     /// 模型标签（如 small/local 策略标记）
     #[serde(default)]
     pub tags: Vec<String>,
@@ -115,6 +122,7 @@ pub fn default_config() -> RouterConfig {
                 label: m.label.to_string(),
                 context_limit: m.context_limit,
                 enabled: true,
+                pinned: true,
                 tags: Vec::new(),
             })
             .collect(),
@@ -167,11 +175,15 @@ pub fn save_config(conn: &Connection, cfg: &RouterConfig) -> Result<(), String> 
 
 /// 合并供应商远端模型列表：已存在的（同 provider+id）不重复追加，
 /// 本地已配置但远端缺失的条目保留（如离线时的快照）。返回新增数量。
+///
+/// `pinned` 控制新条目是否直接进降级链：`false` 表示仅作为可选目录，
+/// 需用户勾选收藏后才生效；`true` 用于用户主动拉取的场景（如 Ollama）。
 pub fn merge_remote_models(
     cfg: &mut RouterConfig,
     provider: &str,
     remote: Vec<RemoteModel>,
     tags: &[String],
+    pinned: bool,
 ) -> usize {
     let mut added = 0;
     for m in remote {
@@ -188,11 +200,37 @@ pub fn merge_remote_models(
             label: m.label,
             context_limit: m.context_limit,
             enabled: true,
+            pinned,
             tags: tags.to_vec(),
         });
         added += 1;
     }
     added
+}
+
+/// 同步某供应商的收藏状态：`pinned_keys` 为空表示全部取消收藏。
+///
+/// 仅作用于该供应商自己的模型；`pinned` 之外的字段（标签等）保持不变。
+/// 返回收藏数量。
+pub fn set_pinned(
+    cfg: &mut RouterConfig,
+    provider: &str,
+    pinned_keys: &[String],
+) -> usize {
+    let pinned: std::collections::HashSet<&str> =
+        pinned_keys.iter().map(|s| s.as_str()).collect();
+    let mut count = 0;
+    for m in cfg
+        .models
+        .iter_mut()
+        .filter(|m| m.provider == provider)
+    {
+        m.pinned = pinned.contains(m.key().as_str());
+        if m.pinned {
+            count += 1;
+        }
+    }
+    count
 }
 
 /// 配置不变量：过滤供应商已不存在的模型；selected 必须指向
@@ -205,6 +243,7 @@ pub fn normalize(mut cfg: RouterConfig) -> RouterConfig {
         .iter()
         .filter(|m| {
             m.enabled
+                && m.pinned
                 && cfg
                     .providers
                     .iter()
@@ -216,7 +255,9 @@ pub fn normalize(mut cfg: RouterConfig) -> RouterConfig {
         cfg.selected = selectable
             .first()
             .cloned()
-            .unwrap_or_else(|| model_key("openrouter", MODELS[0].id));
+            // 全部取消收藏时保留原 selected 文本，仅作兜底展示，
+            // 不强制指向某个未被收藏的模型
+            .unwrap_or_else(|| cfg.selected.clone());
     }
     cfg
 }
@@ -304,21 +345,23 @@ mod tests {
             label: "Ghost".to_string(),
             context_limit: 8192,
             enabled: true,
+            pinned: true,
             tags: vec![],
         });
         cfg.selected = model_key("ghost", "m1");
         let cfg = normalize(cfg);
         assert_eq!(cfg.models.len(), 4);
+        // provider 已不存在的 selected 应回退到首个可选项
         assert_eq!(cfg.selected, cfg.models[0].key());
 
-        // 禁用 provider 后其模型保留（可再启用），selected 若已不可选则回退
+        // 禁用 provider 后其模型保留（可再启用），selected 若已不可选则保留原值
         let mut cfg = default_config();
         cfg.selected = cfg.models[2].key();
         cfg.providers[0].enabled = false;
         let cfg = normalize(cfg);
         assert_eq!(cfg.models.len(), 4);
-        // 没有可选项时回退到出厂默认 key
-        assert_eq!(cfg.selected, model_key("openrouter", MODELS[0].id));
+        // 没有可选项时不强制改写 selected（避免覆盖用户选择）
+        assert_eq!(cfg.selected, cfg.models[2].key());
     }
 
     #[test]
@@ -349,7 +392,7 @@ mod tests {
                 context_limit: 32768,
             },
         ];
-        let added = merge_remote_models(&mut cfg, "ollama", remote, &["local".into()]);
+        let added = merge_remote_models(&mut cfg, "ollama", remote, &["local".into()], true);
         assert_eq!(added, 2);
         assert_eq!(cfg.models.len(), MODELS.len() + 2);
 
@@ -359,7 +402,7 @@ mod tests {
             label: "Llama3 8B".into(),
             context_limit: 8192,
         }];
-        let added = merge_remote_models(&mut cfg, "ollama", dup, &["local".into()]);
+        let added = merge_remote_models(&mut cfg, "ollama", dup, &["local".into()], true);
         assert_eq!(added, 0);
         assert_eq!(cfg.models.len(), MODELS.len() + 2);
 
@@ -373,6 +416,7 @@ mod tests {
                 context_limit: 1,
             }],
             &[],
+            false,
         );
         assert_eq!(added, 1);
 
@@ -384,6 +428,78 @@ mod tests {
         // normalize 后供应商仍在，模型保留
         let cfg = normalize(cfg);
         assert!(cfg.models.iter().any(|m| m.provider == "ollama"));
+    }
+
+    #[test]
+    fn remote_models_start_unpinned_and_pin_is_idempotent() {
+        let mut cfg = default_config();
+        // 远端拉取的目录条目默认未收藏，不进降级链
+        let added = merge_remote_models(
+            &mut cfg,
+            "openrouter",
+            vec![
+                RemoteModel {
+                    id: "vendor/a".into(),
+                    label: "A".into(),
+                    context_limit: 8192,
+                },
+                RemoteModel {
+                    id: "vendor/b".into(),
+                    label: "B".into(),
+                    context_limit: 8192,
+                },
+            ],
+            &[],
+            false,
+        );
+        assert_eq!(added, 2);
+        let chain_keys: Vec<String> = cfg
+            .models
+            .iter()
+            .filter(|m| m.pinned)
+            .map(|m| m.key())
+            .collect();
+        assert!(!chain_keys.contains(&"openrouter:vendor/a".to_string()));
+
+        // 勾选收藏：set_pinned 为幂等覆盖，仅保留传入的 key（默认 4 个模型被取消收藏）
+        let n = set_pinned(
+            &mut cfg,
+            "openrouter",
+            &[
+                "openrouter:vendor/a".to_string(),
+                "openrouter:vendor/b".to_string(),
+            ],
+        );
+        assert_eq!(n, 2);
+        assert_eq!(cfg.models.iter().filter(|m| m.pinned).count(), 2);
+        // 幂等：重复提交结果一致
+        set_pinned(&mut cfg, "openrouter", &["openrouter:vendor/a".to_string()]);
+        assert_eq!(cfg.models.iter().filter(|m| m.pinned).count(), 1);
+
+        // 取消全部收藏（只影响该 provider）
+        assert_eq!(set_pinned(&mut cfg, "openrouter", &[]), 0);
+        assert!(!cfg.models.iter().any(|m| m.pinned));
+    }
+
+    #[test]
+    fn legacy_config_without_pinned_field_defaults_to_true() {
+        // 模拟旧版本持久化的配置：models 数组没有 pinned 字段
+        let json = r#"{
+            "providers": [{
+                "id": "openrouter", "kind": "openrouter", "name": "OpenRouter",
+                "base_url": "https://openrouter.ai/api/v1", "enabled": true
+            }],
+            "models": [{
+                "provider": "openrouter", "id": "legacy/model",
+                "label": "Legacy", "context_limit": 8192, "enabled": true
+            }],
+            "selected": "openrouter:legacy/model"
+        }"#;
+        let cfg: RouterConfig = serde_json::from_str(json).unwrap();
+        assert!(cfg.models[0].pinned, "旧配置应默认视为已收藏");
+        // selected 指向该模型，normalize 不应改写
+        let cfg = normalize(cfg);
+        assert_eq!(cfg.selected, "openrouter:legacy/model");
     }
 
     #[test]
