@@ -14,6 +14,7 @@ import {
   type ProviderStatus,
 } from "../lib/api";
 import { useStore } from "../store";
+import Select from "../components/Select";
 
 interface Props {
   onClose: () => void;
@@ -445,22 +446,16 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                             }
                             className={`h-2.5 w-2.5 shrink-0 rounded-full ${dot}`}
                           />
-                          <select
-                            value={p.kind}
-                            onChange={(e) =>
-                              updateProvider(i, {
-                                kind: e.target.value as ProviderKind,
-                              })
-                            }
-                            aria-label="供应商类型"
-                            className="rounded-full border border-line bg-surface px-2.5 py-1 text-xs text-subtle outline-none transition-colors focus:border-brand"
-                          >
-                            {KIND_OPTIONS.map((o) => (
-                              <option key={o.value} value={o.value}>
-                                {o.label}
-                              </option>
-                            ))}
-                          </select>
+                          <div className="w-[124px] shrink-0">
+                            <Select
+                              value={p.kind}
+                              options={KIND_OPTIONS}
+                              onChange={(v) =>
+                                updateProvider(i, { kind: v as ProviderKind })
+                              }
+                              aria-label="供应商类型"
+                            />
+                          </div>
                           <input
                             value={p.name}
                             onChange={(e) =>
