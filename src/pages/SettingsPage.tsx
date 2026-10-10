@@ -95,16 +95,20 @@ const LOCAL_PRESETS: { label: string; host: string; port: string; path: string }
 
 export default function SettingsPage({ onClose, theme, setTheme }: Props) {
   const { models, selectedModel, setModel, refreshModels } = useStore();
-  // 已收藏模型按厂商分组（provider_name 已由后端解析为自定义名优先）
+  // 已收藏模型按厂商真实分组（provider_name 已由后端解析为自定义名优先）。
+  // 用 Map 归并而非相邻聚合，否则同厂商模型不连续时会被拆成多个同名标题。
   const pinnedGroups = (() => {
-    const out: { provider: string; models: typeof models }[] = [];
+    const map = new Map<string, typeof models>();
     for (const m of models.filter((x) => x.pinned)) {
       const name = m.provider_name || providerDisplayName(m.provider);
-      const last = out[out.length - 1];
-      if (last && last.provider === name) last.models.push(m);
-      else out.push({ provider: name, models: [m] });
+      const bucket = map.get(name);
+      if (bucket) bucket.push(m);
+      else map.set(name, [m]);
     }
-    return out;
+    return [...map].map(([provider, list]) => ({
+      provider,
+      models: list,
+    }));
   })();
   const [section, setSection] = useState<SectionId>("appearance");
   const [rules, setRules] = useState("");

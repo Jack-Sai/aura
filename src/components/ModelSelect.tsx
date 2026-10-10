@@ -34,14 +34,18 @@ export default function ModelSelect({ models, selectedModel, onChange }: Props) 
   }, [open]);
 
   const groups = useMemo<ModelGroup[]>(() => {
-    // 对话页模型选择器只展示已收藏模型，按厂商分组
-    const out: ModelGroup[] = [];
+    // 只展示已收藏模型；按厂商真实分组（保持首次出现顺序）。
+    // 注意不能用「与上一组比较」的相邻聚合：同一厂商的模型在数组中一旦
+    // 不连续（例如先收藏 A 厂商、再收藏 B 厂商、再收藏 A 厂商），
+    // 就会被拆成多个同名标题。
+    const map = new Map<string, ModelInfo[]>();
     for (const m of models.filter((x) => x.pinned)) {
-      const last = out[out.length - 1];
-      if (last && last.provider === m.provider) last.models.push(m);
-      else out.push({ provider: m.provider_name || m.provider, models: [m] });
+      const name = m.provider_name || m.provider;
+      const bucket = map.get(name);
+      if (bucket) bucket.push(m);
+      else map.set(name, [m]);
     }
-    return out;
+    return [...map].map(([provider, list]) => ({ provider, models: list }));
   }, [models]);
 
   const selected = models.find((m) => m.key === selectedModel);
