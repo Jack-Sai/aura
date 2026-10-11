@@ -480,6 +480,55 @@ mod tests {
         assert!(matches!(&events[1], Event::TodoUpdate(_)));
     }
 
+    /// 跨模块：parser 产出的 TodoPlan 载荷必须能被 `todo::parse_plan` 直接消费。
+    ///
+    /// parser 只负责切标签，不校验 JSON。两段各自测试都通过，
+    /// 但若某段擅自改了载荷格式（例如带上标签本身），
+    /// 组合起来就会在运行时炸——只有串起来才暴露。
+    #[test]
+    fn parser_plan_payload_is_accepted_by_todo_parser() {
+        let (events, _) = feed_all(&[
+            "<todo_plan>{\"todos\":[{\"id\":\"s1\",\"title\":\"建表\"},{\"id\":\"s2\",\"title\":\"写测试\"}]}</todo_plan>",
+        ]);
+        let raw = events
+            .iter()
+            .find_map(|e| match e {
+                Event::TodoPlan(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("应产出 TodoPlan 事件");
+
+        let parsed = crate::agent::todo::parse_plan(&raw).expect("载荷应能被 todo 解析");
+        assert_eq!(parsed.todos.len(), 2);
+        assert_eq!(parsed.todos[0].id, "s1");
+    }
+
+    /// 跨模块：parser 产出的 TodoUpdate 载荷必须能驱动清单状态变更。
+    #[test]
+    fn parser_update_payload_drives_todo_state() {
+        let mut todos =
+            crate::agent::todo::parse_plan(r#"[{"id":"s1","title":"建表"}]"#).unwrap().todos;
+
+        let (events, _) = feed_all(&[
+            "<todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>",
+            "开始处理",
+            "<todo_update>{\"id\":\"s1\",\"status\":\"done\"}</todo_update>",
+        ]);
+
+        for ev in &events {
+            if let Event::TodoUpdate(raw) = ev {
+                let v: serde_json::Value = serde_json::from_str(raw).expect("应是合法 JSON");
+                let id = v.get("id").and_then(|x| x.as_str()).unwrap();
+                let status =
+                    crate::agent::TodoStatus::parse(v.get("status").and_then(|x| x.as_str()).unwrap());
+                crate::agent::todo::apply_update(&mut todos, id, status);
+            }
+        }
+
+        assert_eq!(todos[0].status, crate::agent::TodoStatus::Done);
+        assert!(crate::agent::todo::done_count(&todos) == 1);
+    }
+
     #[test]
     fn unclosed_answer_treated_as_done() {
         let (events, finish) = feed_all(&["<answer>答案没写完"]);

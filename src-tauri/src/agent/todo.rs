@@ -390,4 +390,60 @@ mod tests {
             assert_eq!(back, st);
         }
     }
+
+    /// 模拟 Build 模式的一次完整推进：模型先给计划，随后逐步更新状态。
+    ///
+    /// 这条测试跨越了「解析计划 → 应用更新 → 渲染进度」三段，
+    /// 单元测试各自通过但组合起来出问题的情况（例如 id 对不上、
+    /// 状态写进去却读不出来）只有串起来才暴露。
+    #[test]
+    fn full_build_lifecycle_from_plan_to_progress() {
+        let parsed = parse_plan(
+            r#"{"todos":[
+                {"id":"s1","title":"新增 config 模块"},
+                {"id":"s2","title":"注册路由"},
+                {"id":"s3","title":"补测试"}
+            ]}"#,
+        )
+        .unwrap();
+        let mut todos = parsed.todos;
+        assert_eq!(todos.len(), 3);
+
+        // 模型开始执行第一步
+        apply_update(&mut todos, "s1", TodoStatus::InProgress);
+        // 第一步完成，开始第二步
+        apply_update(&mut todos, "s1", TodoStatus::Done);
+        apply_update(&mut todos, "s2", TodoStatus::InProgress);
+        apply_update(&mut todos, "s2", TodoStatus::Done);
+        apply_update(&mut todos, "s3", TodoStatus::InProgress);
+        apply_update(&mut todos, "s3", TodoStatus::Done);
+
+        assert_eq!(done_count(&todos), 3);
+
+        // 进度渲染必须与实际状态一致，否则面板显示的百分比是假的
+        let text = render_for_prompt(&todos);
+        assert!(text.contains("3/3 已完成"), "实际渲染：{text}");
+        assert!(text.contains("- [x] s1: 新增 config 模块"));
+
+        // 序列化往返后进度不能丢：这是重启后能否接上的前提
+        let json = serde_json::to_string(&todos).unwrap();
+        let back: Vec<Todo> = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.len(), 3);
+        assert!(back.iter().all(|t| t.is_done()));
+        assert_eq!(done_count(&back), 3);
+    }
+
+    /// 清单被用户删改后，模型仍按旧 id 更新，不应污染新清单。
+    #[test]
+    fn stale_update_does_not_corrupt_edited_list() {
+        let parsed = parse_plan(r#"[{"id":"s1","title":"甲"},{"id":"s2","title":"乙"}]"#)
+            .unwrap();
+        // 用户删掉了 s1
+        let (mut todos, _) = sanitize(vec![parsed.todos[1].clone()]);
+        assert_eq!(todos.len(), 1);
+        // 模型仍发来 s1 的更新
+        assert!(!apply_update(&mut todos, "s1", TodoStatus::Done));
+        assert_eq!(todos.len(), 1);
+        assert!(!todos[0].is_done(), "不应把状态写到别的步骤上");
+    }
 }
