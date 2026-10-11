@@ -212,6 +212,7 @@ name = "aura"
 version = "0.3.2"
 dependencies = [
  "bytes",
+ "encoding_rs",
  "futures-util",
  "regex",
  "reqwest",

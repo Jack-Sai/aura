@@ -28,6 +28,8 @@ futures-util = "0.3.34"
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 bytes = "1.12.1"
 tokio = { version = "1.53.2", features = ["sync", "macros", "time", "rt", "rt-multi-thread", "process"] }
+# cmd 输出解码：中文 Windows 的 cmd 默认按 GBK(936) 输出，UTF-8 解码会得到乱码
+encoding_rs = "0.8"
 tauri-plugin-dialog = "2.8.1"
 regex = "1.10"
 

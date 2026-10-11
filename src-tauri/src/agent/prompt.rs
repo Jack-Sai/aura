@@ -49,7 +49,9 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
              - run_script 用于验证修改结果（编译、跑测试、查看 git diff），不要用它做与当前任务无关的操作。\n\
              - 先看返回的**退出码**：非 0 表示命令失败，必须读懂输出并修复，不要在失败状态下继续往下走。\n\
              - 输出过长会被截断，只保留头尾；关键信息请改用更精确的命令重新获取。\n\
-             - 命令失败后不要原样重试，先根据错误信息调整命令或修改代码。\n",
+             - 命令失败后不要原样重试，先根据错误信息调整命令或修改代码。\n\
+             - 提交信息含空格、括号或中文时，用文件传参而非引号：\n\
+             先 write_file 写入 commit_msg.txt，再 git commit -F commit_msg.txt。\n",
         );
     }
 

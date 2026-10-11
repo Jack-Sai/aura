@@ -66,23 +66,24 @@ pub fn check_dangerous(command: &str) -> Option<&'static str> {
         .map(|(_, reason)| *reason)
 }
 
-/// Windows 上 cmd 输出通常是 CP936(GBK) 而非 UTF-8，直接按 UTF-8 解析会产生
-/// 替换字符，模型看到的是乱码。这里先按 UTF-8 尝试，失败再回退 GBK。
-#[cfg(windows)]
+/// 解码子进程输出字节。
+///
+/// 中文 Windows 的 cmd 默认按 GBK(936) 输出，直接按 UTF-8 解码会得到一串
+/// `�`，模型读到的是乱码。这里按「UTF-8 优先，失败回退 GBK」处理：
+/// 多数现代程序（Go/Rust/Node）会输出 UTF-8，而 cmd 内建命令与不少脚本
+/// 是 GBK。
+///
+/// 曾尝试前置 `chcp 65001` 统一代码页，但**不可靠**：chcp 修改的是控制台的
+/// 共享状态，多个 cmd 进程并发或先后执行时会互相干扰，实测出现同一段代码
+/// 单独运行正常、跟在另一个 cmd 之后反而输出 GBK 的情况。
 fn decode_bytes(raw: &[u8]) -> String {
     match std::str::from_utf8(raw) {
-        Ok(s) => s.to_string(),
-        Err(_) => {
-            // 无额外依赖，用 lossy 转换至少保证可读
-            // （完整 GBK 支持需引入 encoding_rs，此处保持零依赖）
-            String::from_utf8_lossy(raw).into_owned()
-        }
+        Ok(s) => return s.to_string(),
+        Err(_) => {}
     }
-}
-
-#[cfg(not(windows))]
-fn decode_bytes(raw: &[u8]) -> String {
-    String::from_utf8_lossy(raw).into_owned()
+    // UTF-8 解码失败 → 视作 GBK
+    let (text, _, _) = encoding_rs::GBK.decode(raw);
+    text.into_owned()
 }
 
 /// 头尾截断，超长时中间标注省略字符数。
@@ -186,10 +187,33 @@ pub fn run_script(root: &Path, args: &Value) -> Result<ToolOutput, String> {
     })
 }
 
+/// 通过环境变量传递原始命令串。
+///
+/// **不能直接用 `Command::arg(command)`**：Rust 会按 CRT 规则把命令里的
+/// `"` 转义成 `\"`，而 cmd 有自己的一套引号解析规则，两者不兼容——
+/// 结果是 `git commit -m "Add MST code"` 被当成一个名为 `\"echo ...\"`
+/// 的可执行文件去查找，直接失败。这正是模型反复重试 `git commit -m` 的原因。
+///
+/// 实测三种方案：
+/// - `arg("/C")` + 拼接前缀 + 整条引号包裹 → cmd 找不到命令（引号被当字面量）
+/// - `arg("/S")` + `arg("/C")` + 包裹 → 同样失败
+/// - **环境变量** → 引号、中文、管道均正确
 #[cfg(windows)]
 fn build_command(root: &Path, command: &str) -> std::process::Command {
+    // **命令必须经环境变量传入**，不能拼接进命令行字面量：
+    //
+    // Rust 会在创建进程时按 CRT 规则把参数里的 `"` 转义成 `\"`，而 cmd 有
+    // 一套自己的引号解析规则，两者不兼容 → `git commit -m "Add MST code"`
+    // 会被当成名为 `\"echo ...\"` 的可执行文件去查找，直接失败。
+    // 这正是模型反复重试 `git commit -m` 却始终不成功的原因。
+    //
+    // 中文改由 `decode_bytes` 按 GBK 解码处理，不依赖 `chcp`——
+    // chcp 修改的是控制台共享状态，并发或先后执行多个 cmd 时会互相干扰。
     let mut cmd = std::process::Command::new("cmd");
-    cmd.arg("/C").arg(command).current_dir(root);
+    cmd.arg("/C")
+        .arg("%AURA_CMD%")
+        .env("AURA_CMD", command)
+        .current_dir(root);
     cmd
 }
 
@@ -337,6 +361,67 @@ mod tests {
         let out = first_line(&long);
         assert!(out.chars().count() <= 61);
         assert!(out.ends_with('…'));
+    }
+
+    #[test]
+    fn decode_handles_both_utf8_and_gbk() {
+        // UTF-8 原样通过
+        let utf8 = "测试中文 abc";
+        assert!(decode_bytes(utf8.as_bytes()).contains("测试中文"));
+
+        // GBK 字节应被正确还原为中文（而非乱码）
+        let (gbk, _, _) = encoding_rs::GBK.encode("测试中文");
+        let decoded = decode_bytes(&gbk);
+        assert!(
+            decoded.contains("测试中文"),
+            "GBK 解码失败: {:?}",
+            decoded
+        );
+    }
+
+    #[test]
+    fn quotes_and_pipes_survive_transport() {
+        // 回归：Rust 的 Command::arg 会把 `"` 转义成 `\"`，cmd 无法识别，
+        // 导致 `git commit -m "..."` 这类命令必然失败。改用环境变量传递后修复。
+        let ws = std::env::temp_dir().join("aura_exec_quote");
+        let _ = std::fs::create_dir_all(&ws);
+
+        // 引号内容需原样保留
+        let out = run_script(
+            &ws,
+            &serde_json::json!({ "command": "echo \"Add MST code\" done" }),
+        )
+        .unwrap();
+        assert!(
+            out.result.contains("Add MST code"),
+            "引号内容未正确传递: {:?}",
+            out.result
+        );
+
+        // 管道等复合命令需可用
+        let out = run_script(
+            &ws,
+            &serde_json::json!({ "command": "echo hello | findstr h" }),
+        )
+        .unwrap();
+        assert!(out.result.contains("hello"), "管道失效: {:?}", out.result);
+
+        let _ = std::fs::remove_dir_all(&ws);
+    }
+
+    #[test]
+    fn chinese_output_survives_encoding() {
+        // 回归：cmd 默认按 GBK 代码页输出，Rust 按 UTF-8 解码会得到乱码。
+        // build_command 前置 chcp 65001 后中文必须原样回填给模型。
+        let ws = std::env::temp_dir().join("aura_exec_cn");
+        let _ = std::fs::create_dir_all(&ws);
+        let out = run_script(&ws, &serde_json::json!({ "command": "echo 测试中文 abc" })).unwrap();
+        assert!(
+            out.result.contains("测试中文"),
+            "中文未正确传递/解码: {:?}",
+            out.result
+        );
+        let _ = std::fs::remove_dir_all(&ws);
     }
 
     #[test]
