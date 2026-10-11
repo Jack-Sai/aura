@@ -13,12 +13,16 @@ use super::keepawake::KeepAwake;
 use super::mode::Mode;
 use super::parser::{Event, Finish, Parser};
 use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
+use super::todo;
+use super::Todo;
 
 pub const EV_CHUNK: &str = "agent:chunk";
 pub const EV_ACTION: &str = "agent:action";
 pub const EV_NOTICE: &str = "agent:notice";
 pub const EV_ERROR: &str = "agent:error";
 pub const EV_DONE: &str = "agent:done";
+/// 规划模式产出的任务清单。载荷为清洗后的 Todo 数组。
+pub const EV_TODO_PLAN: &str = "agent:todo_plan";
 
 /// 单轮对话允许的最大工具轮次。
 ///
@@ -56,6 +60,11 @@ pub struct TurnContext<'a> {
     pub cancelled: &'a AtomicBool,
     /// 本轮会话模式，决定可用工具与 prompt 形态。默认 Chat 以兼容既有调用方。
     pub mode: Mode,
+    /// 落盘任务清单的回调。
+    ///
+    /// runner 不持有数据库连接，由 `commands.rs` 注入闭包，
+    /// 这样存储细节不会渗进 agent 层，也便于测试时替换。
+    pub persist_todos: Option<&'a (dyn Fn(Vec<Todo>) + Send + Sync)>,
 }
 
 enum Next {
@@ -136,6 +145,41 @@ fn parse_tool_call(raw: &str) -> Result<(String, Value), String> {
 
 fn is_known_tool(name: &str) -> bool {
     crate::tools::is_known(&normalize_tool_name(name))
+}
+
+/// 处理模型产出的 `<todo_plan>`：解析、落库、推送前端。
+///
+/// 解析失败不打断本轮对话——用户仍应看到模型的文字说明，
+/// 只是拿不到结构化清单。失败原因通过 notice 回传，让用户知道
+/// 「计划没生成出来」而不是以为模型没写计划。
+fn handle_plan(ctx: &TurnContext<'_>, raw: &str) {
+    let parsed = match todo::parse_plan(raw) {
+        Ok(p) => p,
+        Err(msg) => {
+            emit_text(
+                ctx.app,
+                ctx.session_id,
+                EV_NOTICE,
+                &format!("未能解析任务清单：{msg}"),
+            );
+            return;
+        }
+    };
+    if parsed.dropped > 0 {
+        emit_text(
+            ctx.app,
+            ctx.session_id,
+            EV_NOTICE,
+            &format!("任务清单中有 {} 条缺少标题或 id 重复，已忽略。", parsed.dropped),
+        );
+    }
+    if let Some(app) = ctx.persist_todos {
+        app(parsed.todos.clone());
+    }
+    let _ = ctx.app.emit(
+        EV_TODO_PLAN,
+        json!({ "session_id": ctx.session_id, "todos": parsed.todos }),
+    );
 }
 
 fn write_diag_log(info: &str) {
@@ -296,6 +340,16 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                                 answered = true;
                                 break 'stream;
                             }
+                            Event::TodoPlan(json_str) => {
+                                // 保留原文进 history：既让模型知道计划已输出，
+                                // 也保证后续轮次能看到自己写过什么
+                                turn_output
+                                    .push_str(&format!("<todo_plan>{}</todo_plan>", json_str));
+                                handle_plan(ctx, &json_str);
+                                // 注意：这里**不能** break 'stream。
+                                // 计划之后模型还要输出 <answer> 做说明，
+                                // 打断流会导致那段正文整个丢失。
+                            }
                         }
                     }
                 }
@@ -342,6 +396,11 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                         turn_output.push_str("</answer>");
                         answered = true;
                     }
+                    Event::TodoPlan(json_str) => {
+                        turn_output
+                            .push_str(&format!("<todo_plan>{}</todo_plan>", json_str));
+                        handle_plan(ctx, &json_str);
+                    }
                 }
             }
             if answered {
@@ -385,6 +444,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 }
                 let msg = match finish {
                     Finish::UnclosedTool => "JSON parse failed - tool tag is not closed",
+                    Finish::UnclosedPlan => {
+                        "todo_plan tag is not closed - 请输出完整的 <todo_plan>...</todo_plan>"
+                    }
                     _ => "输出未包含合法的 <tool> 或 <answer> 标签，请严格按照协议输出",
                 };
                 ctx.history.push(json!({

@@ -158,6 +158,11 @@ pub async fn send_message(
             session_id: &session_id,
             cancelled: &state.cancelled,
             mode,
+            persist_todos: Some(&|todos: Vec<Todo>| {
+                if let Ok(db) = state.db.lock() {
+                    let _ = db::save_todos(&db, &session_id, &todos);
+                }
+            }),
         };
         run_turn(&mut ctx, message).await
     };
