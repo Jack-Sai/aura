@@ -40,6 +40,8 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
     models,
     selectedModel,
     setModel,
+    mode,
+    setMode: changeMode,
     workspace,
     startRename,
     deleteSession,
@@ -139,6 +141,8 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
                 models={models}
                 selectedModel={selectedModel}
                 onModelChange={setModel}
+                mode={mode}
+                onModeChange={changeMode}
               />
             </>
           )}

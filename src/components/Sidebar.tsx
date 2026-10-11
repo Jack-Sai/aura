@@ -9,6 +9,8 @@ import {
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
+import { showsTodoPanel } from "../lib/mode";
+import TodoPanel from "./TodoPanel";
 
 const COLLAPSE_KEY = "aura-sidebar-collapsed";
 
@@ -37,12 +39,21 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
     renamingId,
     cancelRename,
     renameSession,
+    mode,
+    busy,
+    startBuild,
+    deleteTodoStep,
   } = useStore();
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
+
+  const activeSession = sessions.find((s) => s.id === activeId);
+  const activeTodos = activeSession?.todos ?? [];
+  // Chat 是自由对话，不展示清单面板以免干扰
+  const showPanel = showsTodoPanel(mode, activeTodos.length);
 
   function toggleCollapsed() {
     setCollapsed((v) => {
@@ -184,6 +195,15 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
           <Plus size={14} />
         </button>
       </div>
+
+      {showPanel && (
+        <TodoPanel
+          todos={activeTodos}
+          onStartBuild={mode === "plan" ? startBuild : undefined}
+          onDeleteStep={deleteTodoStep}
+          busy={busy}
+        />
+      )}
 
       <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         {workspaces.map((w) => {

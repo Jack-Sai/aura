@@ -17,6 +17,7 @@ import {
   removeSession,
   removeWorkspace as removeWorkspaceApi,
   saveSession,
+  saveTodos as saveTodosApi,
   sendMessage as sendMessageApi,
   setSelectedModel as setSelectedModelApi,
   setWorkspace,
@@ -24,6 +25,12 @@ import {
   type ModelInfo,
 } from "./lib/api";
 import { type Mode } from "./lib/mode";
+import {
+  normalizeTodos,
+  nextTodoId,
+  type Todo,
+  type TodoStatus,
+} from "./lib/todo";
 
 // 统一工作区键：反斜杠转 /，并剥离 Windows 扩展路径的 //?/ 前缀，
 // 保证与 Rust 侧 canonicalize 后的键一致
@@ -49,6 +56,8 @@ export interface Session {
   title: string;
   workspace: string;
   messages: ChatMessage[];
+  /** 任务清单。旧会话可能没有，按空处理 */
+  todos: Todo[];
 }
 
 interface State {
@@ -79,6 +88,10 @@ interface StoreValue extends State {
   removeWorkspace: (path: string) => Promise<void>;
   setModel: (id: string) => Promise<void>;
   setMode: (m: Mode) => void;
+  startBuild: () => void;
+  deleteTodoStep: (id: string) => void;
+  addTodoStep: (title: string) => void;
+  setTodoStatus: (id: string, status: TodoStatus) => void;
   refreshModels: () => Promise<void>;
 }
 
@@ -95,6 +108,7 @@ function createSession(workspace: string): Session {
     title: "新对话",
     workspace,
     messages: [],
+    todos: [],
   };
 }
 
@@ -193,47 +207,37 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     let disposed = false;
     const unsubs: Array<() => void> = [];
 
-    const on = async (
-      name: string,
-      cb: (
-        payload: {
-          session_id: string;
-          text?: string;
-          ok?: boolean;
-          detail?: string;
-        },
-      ) => void,
-    ) => {
-      const un = await listen<{
-        session_id: string;
-        text?: string;
-        ok?: boolean;
-        detail?: string;
-      }>(name, (e) => cb(e.payload));
+    // 泛型化而非写死 payload：新事件（如 todo_plan）携带的是 todos 而非
+    // text/ok/detail，写死类型就只能改签名或塞进 any
+    const on = async <T,>(name: string, cb: (payload: T) => void) => {
+      const un = await listen<T>(name, (e) => cb(e.payload));
       if (disposed) un();
       else unsubs.push(un);
     };
 
-    on("agent:chunk", (p) => {
+    on<{ session_id: string; text?: string }>("agent:chunk", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
       bufferRef.current += p.text ?? "";
     });
-    on("agent:action", (p) => {
-      const stream = streamRef.current;
-      if (!stream || stream.sessionId !== p.session_id) return;
-      appendBlocks(stream.sessionId, stream.messageId, (b) => [
-        ...b,
-        // ok 由后端给出；旧版本事件无此字段时按成功处理
-        {
-          kind: "action",
-          text: p.text ?? "",
-          ok: p.ok !== false,
-          detail: p.detail || undefined,
-        },
-      ]);
-    });
-    on("agent:notice", (p) => {
+    on<{ session_id: string; text?: string; ok?: boolean; detail?: string }>(
+      "agent:action",
+      (p) => {
+        const stream = streamRef.current;
+        if (!stream || stream.sessionId !== p.session_id) return;
+        appendBlocks(stream.sessionId, stream.messageId, (b) => [
+          ...b,
+          // ok 由后端给出；旧版本事件无此字段时按成功处理
+          {
+            kind: "action",
+            text: p.text ?? "",
+            ok: p.ok !== false,
+            detail: p.detail || undefined,
+          },
+        ]);
+      },
+    );
+    on<{ session_id: string; text?: string }>("agent:notice", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
       appendBlocks(stream.sessionId, stream.messageId, (b) => [
@@ -241,7 +245,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         { kind: "notice", text: p.text ?? "" },
       ]);
     });
-    on("agent:error", (p) => {
+    on<{ session_id: string; text?: string }>("agent:error", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
       sawErrorRef.current = true;
@@ -250,12 +254,25 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         { kind: "error", text: p.text ?? "" },
       ]);
     });
-    on("agent:done", (p) => {
+    on<{ session_id: string }>("agent:done", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
       appendBlocks(stream.sessionId, stream.messageId, (b) =>
         b.length === 0 ? [{ kind: "text", text: "" }] : b,
       );
+    });
+
+    // 规划模式产出的任务清单。注意这里**不要求** streamRef 匹配：
+    // 清单属于会话级状态，即使此刻正在流式输出也应立即反映到面板
+    on<{ session_id: string; todos: unknown }>("agent:todo_plan", (p) => {
+      setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((sess) =>
+          sess.id === p.session_id
+            ? { ...sess, todos: normalizeTodos(p.todos) }
+            : sess,
+        ),
+      }));
     });
 
     return () => {
@@ -323,6 +340,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
               title: x.title,
               workspace: normWs(x.workspace),
               messages: x.messages,
+              // 旧版本会话没有 todos 字段，按空清单处理
+              todos: normalizeTodos(x.todos),
             }))
             .filter((r) => {
               if (!r.workspace) return false;
@@ -370,6 +389,84 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const setMode = useCallback((m: Mode) => {
     setState((s) => (s.mode === m ? s : { ...s, mode: m }));
   }, []);
+
+  /**
+   * 以「乐观更新 + 后端回填」的方式保存清单。
+   *
+   * 先改本地 state 让面板立刻响应，再落盘；后端会按与模型产出
+   * 相同的规则清洗（去空标题、去重复 id），返回清洗结果后再对齐一次，
+   * 避免前端与落盘态出现分歧。
+   */
+  const commitTodos = useCallback(
+    async (sessionId: string, todos: Todo[]) => {
+      const clean = normalizeTodos(todos);
+      setState((s) => ({
+        ...s,
+        sessions: s.sessions.map((sess) =>
+          sess.id === sessionId ? { ...sess, todos: clean } : sess,
+        ),
+      }));
+      try {
+        const saved = await saveTodosApi(sessionId, clean);
+        setState((s) => ({
+          ...s,
+          sessions: s.sessions.map((sess) =>
+            sess.id === sessionId
+              ? { ...sess, todos: normalizeTodos(saved) }
+              : sess,
+          ),
+        }));
+      } catch {
+        /* 落盘失败保留内存态，下次操作会重试 */
+      }
+    },
+    [],
+  );
+
+  const deleteTodoStep = useCallback(
+    (id: string) => {
+      const sess = stateRef.current.sessions.find(
+        (x) => x.id === stateRef.current.activeId,
+      );
+      if (!sess) return;
+      void commitTodos(sess.id, sess.todos.filter((t) => t.id !== id));
+    },
+    [commitTodos],
+  );
+
+  const addTodoStep = useCallback(
+    (title: string) => {
+      const sess = stateRef.current.sessions.find(
+        (x) => x.id === stateRef.current.activeId,
+      );
+      const text = title.trim();
+      if (!sess || !text) return;
+      void commitTodos(sess.id, [
+        ...sess.todos,
+        { id: nextTodoId(sess.todos), title: text, status: "pending" },
+      ]);
+    },
+    [commitTodos],
+  );
+
+  const setTodoStatus = useCallback(
+    (id: string, status: TodoStatus) => {
+      const sess = stateRef.current.sessions.find(
+        (x) => x.id === stateRef.current.activeId,
+      );
+      if (!sess) return;
+      void commitTodos(
+        sess.id,
+        sess.todos.map((t) => (t.id === id ? { ...t, status } : t)),
+      );
+    },
+    [commitTodos],
+  );
+
+  /** 把当前会话切到执行模式，供清单面板的「开始执行」调用。 */
+  const startBuild = useCallback(() => {
+    setMode("build");
+  }, [setMode]);
 
   const refreshModels = useCallback(async () => {
     try {
@@ -569,6 +666,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeWorkspace,
       setModel,
       setMode,
+      startBuild,
+      deleteTodoStep,
+      addTodoStep,
+      setTodoStatus,
       refreshModels,
     }),
     [
@@ -587,6 +688,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeWorkspace,
       setModel,
       setMode,
+      startBuild,
+      deleteTodoStep,
+      addTodoStep,
+      setTodoStatus,
       refreshModels,
     ],
   );

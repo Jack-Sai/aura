@@ -1,6 +1,8 @@
 import { useEffect, useRef, useState, type KeyboardEvent } from "react";
 import { ArrowUp, Square } from "lucide-react";
 import type { ModelInfo } from "../lib/api";
+import type { Mode } from "../lib/mode";
+import ModeTabs from "./ModeTabs";
 import ModelSelect from "./ModelSelect";
 
 interface Props {
@@ -10,6 +12,8 @@ interface Props {
   models: ModelInfo[];
   selectedModel: string;
   onModelChange: (id: string) => void;
+  mode: Mode;
+  onModeChange: (m: Mode) => void;
 }
 
 export default function InputArea({
@@ -19,6 +23,8 @@ export default function InputArea({
   models,
   selectedModel,
   onModelChange,
+  mode,
+  onModeChange,
 }: Props) {
   const [value, setValue] = useState("");
   const textareaRef = useRef<HTMLTextAreaElement>(null);
@@ -55,7 +61,13 @@ export default function InputArea({
           value={value}
           onChange={(e) => setValue(e.target.value)}
           onKeyDown={handleKeyDown}
-          placeholder="输入消息…"
+          placeholder={
+            mode === "plan"
+              ? "描述你想做的事，先让 Aura 给出计划…"
+              : mode === "build"
+                ? "描述要执行的任务…"
+                : "输入消息…"
+          }
           className="max-h-[33vh] min-h-[24px] flex-1 resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-subtle"
         />
         {busy ? (
@@ -79,12 +91,15 @@ export default function InputArea({
           </button>
         )}
       </div>
-      <div className="mx-auto mt-2 flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-center justify-between">
-        <ModelSelect
-          models={models}
-          selectedModel={selectedModel}
-          onChange={onModelChange}
-        />
+      <div className="mx-auto mt-2 flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-center justify-between gap-3">
+        <div className="flex items-center gap-2">
+          <ModeTabs mode={mode} onChange={onModeChange} />
+          <ModelSelect
+            models={models}
+            selectedModel={selectedModel}
+            onChange={onModelChange}
+          />
+        </div>
         <p className="text-xs text-subtle">Enter 发送 · Shift+Enter 换行</p>
       </div>
     </div>
