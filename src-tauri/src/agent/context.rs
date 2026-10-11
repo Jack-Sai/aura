@@ -324,4 +324,57 @@ mod tests {
         let messages = vec![msg("system", "sys"), msg("user", "hi"), msg("assistant", "yo")];
         assert!(split_for_compression(&messages, 100000).is_none());
     }
+
+    /// 上下文压缩后任务清单必须仍可从 system prompt 取到。
+    ///
+    /// 清单本体存在独立的 `todos_json` 列，压缩只动 agent 历史，
+    /// 两者互不干涉；而 system prompt 每轮重建并重新注入清单，
+    /// 因此「清单随历史一起被压掉」在设计上不可能发生。
+    ///
+    /// 这条测试把该不变量钉住——将来若有人改成「把清单塞进 history
+    /// 再靠摘要带过去」，这里会立刻失败。
+    #[test]
+    fn todo_list_survives_history_compression() {
+        let todos = crate::agent::todo::parse_plan(
+            r#"[{"id":"s1","title":"新增 config 模块"},{"id":"s2","title":"补测试"}]"#,
+        )
+        .unwrap()
+        .todos;
+
+        // 构造一段足够长、必然触发压缩的历史
+        let mut history = vec![msg("system", "sys")];
+        for i in 0..40 {
+            history.push(msg("user", &format!("早期消息{}{}", i, "内容".repeat(200))));
+        }
+        assert!(
+            needs_compression(&history, 8000, 0),
+            "历史长度应足以触发压缩，否则本测试没有验证价值"
+        );
+
+        // 压缩作用于历史
+        let trimmed = local_trim(&history, 8000, 0);
+        assert!(trimmed.len() < history.len(), "历史应确实被裁剪");
+
+        // 但清单仍在，且能照常渲染进新的 system prompt
+        let rendered = crate::agent::todo::render_for_prompt(&todos);
+        assert!(rendered.contains("s1: 新增 config 模块"));
+        assert!(rendered.contains("s2: 补测试"));
+        assert!(rendered.contains("0/2 已完成"));
+    }
+
+    /// 清单渲染不依赖 history 长度，长对话下同样稳定。
+    #[test]
+    fn todo_render_is_independent_of_history() {
+        let todos = crate::agent::todo::parse_plan(r#"[{"id":"s1","title":"甲"}]"#)
+            .unwrap()
+            .todos;
+        let short = crate::agent::todo::render_for_prompt(&todos);
+        // 模拟超长历史后再渲染，结果应完全一致
+        let mut long_history = vec![msg("system", "sys")];
+        for _ in 0..500 {
+            long_history.push(msg("user", &"x".repeat(100)));
+        }
+        let _ = local_trim(&long_history, 8000, 0);
+        assert_eq!(crate::agent::todo::render_for_prompt(&todos), short);
+    }
 }

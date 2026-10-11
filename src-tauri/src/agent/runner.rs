@@ -162,33 +162,68 @@ fn is_known_tool(name: &str) -> bool {
 /// 只是拿不到结构化清单。失败原因通过 notice 回传，让用户知道
 /// 「计划没生成出来」而不是以为模型没写计划。
 fn handle_plan(ctx: &TurnContext<'_>, raw: &str) {
-    let parsed = match todo::parse_plan(raw) {
-        Ok(p) => p,
-        Err(msg) => {
-            emit_text(
-                ctx.app,
-                ctx.session_id,
-                EV_NOTICE,
-                &format!("未能解析任务清单：{msg}"),
-            );
-            return;
-        }
-    };
-    if parsed.dropped > 0 {
-        emit_text(
+    match parse_plan_payload(raw) {
+        Err(msg) => emit_text(
             ctx.app,
             ctx.session_id,
             EV_NOTICE,
-            &format!("任务清单中有 {} 条缺少标题或 id 重复，已忽略。", parsed.dropped),
-        );
+            &format!("未能解析任务清单：{msg}"),
+        ),
+        Ok(PlanOutcome { todos, dropped }) => {
+            if dropped > 0 {
+                emit_text(
+                    ctx.app,
+                    ctx.session_id,
+                    EV_NOTICE,
+                    &format!("任务清单中有 {dropped} 条缺少标题或 id 重复，已忽略。"),
+                );
+            }
+            if let Some(app) = ctx.persist_todos {
+                app(todos.clone());
+            }
+            let _ = ctx.app.emit(
+                EV_TODO_PLAN,
+                json!({ "session_id": ctx.session_id, "todos": todos }),
+            );
+        }
     }
-    if let Some(app) = ctx.persist_todos {
-        app(parsed.todos.clone());
+}
+
+/// `<todo_plan>` 解析结果。
+struct PlanOutcome {
+    todos: Vec<Todo>,
+    dropped: usize,
+}
+
+/// 解析计划载荷，不涉及任何副作用。
+///
+/// 从 [`handle_plan`] 里剥出来是为了能独立测试：整条链路此前只有
+/// parser 层测过「切标签对不对」，而「切出来的载荷能不能变成清单、
+/// 落库时带的是不是清洗后的版本」无人验证。
+fn parse_plan_payload(raw: &str) -> Result<PlanOutcome, String> {
+    let parsed = todo::parse_plan(raw)?;
+    Ok(PlanOutcome {
+        todos: parsed.todos,
+        dropped: parsed.dropped,
+    })
+}
+
+/// 解析并应用单条状态更新，返回应广播给前端的变更。
+///
+/// 返回 `None` 表示该更新应被静默忽略（格式非法、id 为空、步骤不存在）。
+fn apply_update_payload(todos: &mut [Todo], raw: &str) -> Option<(String, TodoStatus)> {
+    let value: Value = serde_json::from_str(raw.trim()).ok()?;
+    let id = value.get("id").and_then(|v| v.as_str()).map(str::trim)?;
+    if id.is_empty() {
+        return None;
     }
-    let _ = ctx.app.emit(
-        EV_TODO_PLAN,
-        json!({ "session_id": ctx.session_id, "todos": parsed.todos }),
-    );
+    let status = value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(TodoStatus::parse)
+        .unwrap_or_default();
+    // 未命中不回传：模型可能引用已被用户删掉的步骤，静默忽略即可
+    todo::apply_update(todos, id, status).then(|| (id.to_string(), status))
 }
 
 /// 处理模型产出的 `<todo_update>`：应用状态变更、落库、推送前端。
@@ -197,27 +232,9 @@ fn handle_plan(ctx: &TurnContext<'_>, raw: &str) {
 /// 或引用了已删除的步骤都不该打断对话。用户看到的清单不更新，
 /// 总好过对话中断。
 fn handle_todo_update(ctx: &mut TurnContext<'_>, raw: &str) {
-    let value: Value = match serde_json::from_str(raw.trim()) {
-        Ok(v) => v,
-        Err(_) => return,
-    };
-    let Some(id) = value.get("id").and_then(|v| v.as_str()).map(str::trim) else {
+    let Some((id, status)) = apply_update_payload(ctx.todos, raw) else {
         return;
     };
-    if id.is_empty() {
-        return;
-    }
-    let status = value
-        .get("status")
-        .and_then(|v| v.as_str())
-        .map(TodoStatus::parse)
-        .unwrap_or_default();
-
-    // 直接改 ctx.todos：它是 &mut 引用，后续每轮重建 prompt 时
-    // 都会自动带上最新进度，无需额外的同步机制
-    if !todo::apply_update(ctx.todos, id, status) {
-        return;
-    }
     if let Some(app) = ctx.persist_todos {
         app(ctx.todos.to_vec());
     }
@@ -246,6 +263,24 @@ fn write_diag_log(info: &str) {
 /// 写入工具，错了不会报错、只会「选了执行模式却什么都没发生」。
 fn use_compact_prompt(is_small: bool, mode: Mode) -> bool {
     is_small && !mode.is_unrestricted()
+}
+
+/// 工具调用是否放行：已知且当前模式允许。
+///
+/// 与提示词是两套独立的闸门。提示词告诉模型「现在该做什么」，
+/// 这里决定「它实际能做什么」——上下文被压缩、小模型幻觉时，
+/// 提示词可能失效，但这道闸门不会。
+fn tool_permitted(mode: Mode, name: &str) -> Result<(), String> {
+    if !is_known_tool(name) {
+        return Err(format!(
+            "unknown tool '{name}'，可用工具为 {}",
+            crate::tools::registry::names().join("、")
+        ));
+    }
+    if !mode.allows(name) {
+        return Err(mode.reject_reason(name));
+    }
+    Ok(())
 }
 
 pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(), String> {
@@ -545,19 +580,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             match parse_tool_call(&raw) {
                 Ok((name, args)) => {
                     let norm = normalize_tool_name(&name);
-                    if !is_known_tool(&norm) {
-                        Next::Reject(format!(
-                            "unknown tool '{}'，可用工具为 {}",
-                            name,
-                            crate::tools::registry::names().join("、")
-                        ))
-                    } else if !ctx.mode.allows(&norm) {
-                        // 模式隔离的硬闸门：prompt 已声明 Plan 只读，但模型
-                        // 仍可能幻觉调用写工具。此处拒绝并回传可操作的提示，
-                        // 让模型改用只读方式继续，而不是静默丢弃。
-                        Next::Reject(ctx.mode.reject_reason(&norm))
-                    } else {
-                        Next::Tool(norm, args)
+                    match tool_permitted(ctx.mode, &norm) {
+                        Ok(()) => Next::Tool(norm, args),
+                        Err(msg) => Next::Reject(msg),
                     }
                 }
                 Err(msg) => Next::Reject(msg),
@@ -712,6 +737,152 @@ mod tests {
             parse_tool_call(r#"{"name": "read_file", "args": {"path": "a.md"}}"#).unwrap();
         assert_eq!(name, "read_file");
         assert_eq!(args["path"], "a.md");
+    }
+
+    // ---- 端到端：模型原始输出 → 解析器 → 载荷 → 清单状态 ----
+    //
+    // 此前整条链路只有 parser 层测过「标签切得对不对」，
+    // 而「切出来的载荷能否变成清单」「落库的是不是清洗后的版本」
+    // 无人验证。这里从原始模型输出开始跑完整条路径。
+
+    /// 模拟模型输出：先调研、再给计划、最后用 <answer> 收尾。
+    fn feed_model_output(parts: &[&str]) -> Vec<Event> {
+        let mut parser = Parser::new();
+        let mut events = Vec::new();
+        for p in parts {
+            parser.feed(p, &mut events);
+        }
+        parser.finish(&mut events);
+        events
+    }
+
+    #[test]
+    fn end_to_end_plan_reaches_clean_todo_list() {
+        let events = feed_model_output(&[
+            "我先看看项目结构。",
+            "<tool>{\"name\":\"list_files\"}</tool>",
+            "<todo_plan>{\"todos\":[{\"id\":\"s1\",\"title\":\"新增 config 模块\"},{\"id\":\"s2\",\"title\":\"注册路由\"}]}</todo_plan>",
+            "<answer>计划如上</answer>",
+        ]);
+
+        // 从事件流里取出计划载荷，走与 handle_plan 相同的解析路径
+        let raw = events
+            .iter()
+            .find_map(|e| match e {
+                Event::TodoPlan(t) => Some(t.clone()),
+                _ => None,
+            })
+            .expect("应解析出计划事件");
+
+        let outcome = parse_plan_payload(&raw).expect("载荷应可解析");
+        assert_eq!(outcome.todos.len(), 2);
+        assert_eq!(outcome.dropped, 0);
+        assert_eq!(outcome.todos[0].id, "s1");
+        assert_eq!(outcome.todos[1].title, "注册路由");
+        assert!(events.iter().any(|e| matches!(e, Event::AnswerDone)));
+    }
+
+    #[test]
+    fn end_to_end_updates_drive_todo_progress() {
+        let events = feed_model_output(&[
+            "<todo_plan>{\"todos\":[{\"id\":\"s1\",\"title\":\"甲\"},{\"id\":\"s2\",\"title\":\"乙\"}]}</todo_plan>",
+            "<todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>",
+            "开始处理甲。",
+            "<todo_update>{\"id\":\"s1\",\"status\":\"done\"}</todo_update>",
+            "<todo_update>{\"id\":\"s2\",\"status\":\"done\"}</todo_update>",
+            "<answer>全部完成</answer>",
+        ]);
+
+        let mut todos = vec![
+            Todo::new("s1", "甲"),
+            Todo::new("s2", "乙"),
+        ];
+        let mut updates = 0usize;
+        for ev in &events {
+            if let Event::TodoUpdate(raw) = ev {
+                if let Some((id, status)) = apply_update_payload(&mut todos, raw) {
+                    updates += 1;
+                    assert!(todos.iter().any(|t| t.id == id));
+                    assert!(todos.iter().find(|t| t.id == id).unwrap().status == status);
+                }
+            }
+        }
+
+        assert_eq!(updates, 3, "三条更新都应命中");
+        assert_eq!(todo::done_count(&todos), 2);
+        assert!(todos.iter().all(|t| t.is_done()));
+    }
+
+    /// 脏数据不得污染清单：坏 JSON、缺字段、指向不存在步骤。
+    #[test]
+    fn end_to_end_malformed_updates_are_ignored_silently() {
+        let mut todos = vec![Todo::new("s1", "甲")];
+        for raw in [
+            "not json",
+            "{}",
+            r#"{"id":"","status":"done"}"#,
+            r#"{"id":"nope","status":"done"}"#,
+            "",
+        ] {
+            assert_eq!(
+                apply_update_payload(&mut todos, raw),
+                None,
+                "脏载荷 {raw:?} 应被静默忽略"
+            );
+        }
+        assert_eq!(todos.len(), 1);
+        assert!(!todos[0].is_done(), "不得把状态写到别的步骤上");
+    }
+
+    // ---- 工具闸门：只读模式必须拦住一切写入 ----
+
+    #[test]
+    fn readonly_modes_block_mutating_tools_end_to_end() {
+        // 模拟模型在对话模式下幻觉调用写工具
+        let raw = r#"{"name":"write_file","args":{"path":"a.txt","content":"x"}}"#;
+        let (name, _) = parse_tool_call(raw).unwrap();
+        let norm = normalize_tool_name(&name);
+        for mode in [Mode::Chat, Mode::Plan] {
+            let err = tool_permitted(mode, &norm).unwrap_err();
+            assert!(
+                err.contains("write_file") && err.contains("执行模式"),
+                "{} 的拒绝回执应指明工具与出路：{err}",
+                mode.as_str()
+            );
+        }
+    }
+
+    #[test]
+    fn build_mode_permits_mutating_tools_end_to_end() {
+        for name in ["write_file", "string_replace", "run_script"] {
+            assert!(
+                tool_permitted(Mode::Build, name).is_ok(),
+                "执行模式应放行 {name}"
+            );
+        }
+    }
+
+    #[test]
+    fn unknown_tool_is_rejected_in_every_mode() {
+        let err = tool_permitted(Mode::Build, "no_such_tool").unwrap_err();
+        assert!(err.contains("unknown tool"));
+        let err = tool_permitted(Mode::Chat, "no_such_tool").unwrap_err();
+        assert!(err.contains("unknown tool"));
+    }
+
+    #[test]
+    fn tool_names_are_normalized_before_the_gate() {
+        // 模型可能写成 Write-File / WRITE_FILE / "write file"
+        for raw in ["Write-File", "WRITE_FILE", "write file"] {
+            let (name, _) =
+                parse_tool_call(&format!(r#"{{"name":"{}"}}"#, raw.replace(' ', " "))).unwrap();
+            let norm = normalize_tool_name(&name);
+            assert_eq!(norm, "write_file", "{raw} 归一化后应为 write_file");
+            assert!(
+                tool_permitted(Mode::Chat, &norm).is_err(),
+                "变体名不得绕过只读闸门"
+            );
+        }
     }
 
     #[test]
