@@ -27,7 +27,26 @@ const DEFAULT_TIMEOUT_MS: u64 = 120_000;
 /// 超时上限，避免模型传入极大值导致任务挂死。
 const MAX_TIMEOUT_MS: u64 = 600_000;
 
-/// 危险命令黑名单（小写匹配）。命中即拒绝执行。
+/// 删除类动词。**必须与递归/强制标志同时出现**才判定危险。
+///
+/// 单独出现并不危险：`rm file.txt`、`del app.log` 都是正常操作，
+/// 而 `rd`/`ri` 这类短别名还可能出现在文件名或 `mkdir` 里，
+/// 因此统一按词边界匹配，且要求后接危险标志。
+const DELETE_VERBS: &[&str] = &[
+    "remove-item",
+    "remove-itemproperty",
+    "rmdir",
+    "rd",
+    "ri",
+    "rm",
+    "del",
+    "erase",
+];
+
+/// 递归或强制标志。与 [`DELETE_VERBS`] 组合才构成危险操作。
+const DESTRUCTIVE_FLAGS: &[&str] = &["-recurse", "-rec", "-force", "/s", "/q"];
+
+/// 独立危险项：命中即拦，无需组合。
 const DANGEROUS: &[(&str, &str)] = &[
     ("rm -rf /", "递归删除根目录"),
     ("rm -rf ~", "递归删除用户主目录"),
@@ -36,9 +55,14 @@ const DANGEROUS: &[(&str, &str)] = &[
     ("del /f", "Windows 强制删除文件"),
     ("del /q", "Windows 静默删除文件"),
     ("format ", "磁盘格式化"),
+    ("format-volume", "格式化卷"),
     ("mkfs", "文件系统格式化"),
     ("diskpart", "磁盘分区操作"),
+    ("clear-disk", "清除磁盘"),
+    ("initialize-disk", "初始化磁盘"),
     ("shutdown", "系统关机"),
+    ("stop-computer", "关机"),
+    ("restart-computer", "重启"),
     ("halt", "系统停机"),
     ("poweroff", "系统断电"),
     ("reg delete", "删除注册表"),
@@ -48,7 +72,72 @@ const DANGEROUS: &[(&str, &str)] = &[
     ("dd if=", "裸设备写入"),
     ("chmod -r 777 /", "递归放开根目录权限"),
     ("chown -r", "递归变更属主"),
+    ("clear-content", "清空文件内容"),
+    ("invoke-webrequest", "疑似下载并执行远程脚本"),
+    ("iex", "疑似下载并执行远程脚本"),
+    ("invoke-expression", "执行动态构造的命令"),
 ];
+
+/// 在 `hay` 中按词边界查找 `word`，返回其起始字节偏移。
+///
+/// 词边界定义为：前后都不是字母、数字或下划线。
+/// 这样 `rd` 不会命中 `mkdir` / `third`，`rm` 不会命中 `firm`。
+fn find_word(hay: &str, word: &str) -> Option<usize> {
+    let bytes = hay.as_bytes();
+    let w = word.as_bytes();
+    if w.is_empty() || hay.len() < w.len() {
+        return None;
+    }
+    let is_word = |b: u8| b.is_ascii_alphanumeric() || b == b'_';
+    for i in 0..=(bytes.len() - w.len()) {
+        if &bytes[i..i + w.len()] != w {
+            continue;
+        }
+        let before_ok = i == 0 || !is_word(bytes[i - 1]);
+        let after_idx = i + w.len();
+        let after_ok = after_idx >= bytes.len() || !is_word(bytes[after_idx]);
+        if before_ok && after_ok {
+            return Some(i);
+        }
+    }
+    None
+}
+
+/// 检测「删除动词 + 递归/强制标志」的组合。
+///
+/// 解决黑名单的根本缺口：原实现只做小写字面子串匹配，
+/// 而 `powershell -Command "Remove-Item -Recurse -Force x"` 把命令
+/// 当**数据**传给解释器，整条执行语义对匹配器不可见，
+/// 于是被拦的 `rmdir /s` 换个 `Remove-Item` 就绕过去了。
+///
+/// 这里改为识别语义组合而非命令字面量，因此解释器包装同样会被命中。
+fn check_destructive_delete(normalized: &str) -> Option<&'static str> {
+    for verb in DELETE_VERBS {
+        let Some(pos) = find_word(normalized, verb) else {
+            continue;
+        };
+        let tail = &normalized[pos + verb.len()..];
+        if DESTRUCTIVE_FLAGS
+            .iter()
+            .any(|flag| find_word(tail, flag).is_some())
+        {
+            return Some("递归或强制删除");
+        }
+        // `-rf` / `-fr` / `-frx` 这类紧凑短横线组合：拆成单个标志就漏了。
+        // 只认「短横线后紧跟 r/f/s/q 字母」的形式，避免把 `--force` 之类的
+        // 正常参数误当成递归标志
+        if let Some(i) = tail.find('-') {
+            let flags: Vec<char> = tail[i + 1..]
+                .chars()
+                .take_while(|c| matches!(c, 'r' | 'f' | 's' | 'q'))
+                .collect();
+            if flags.contains(&'r') || flags.contains(&'f') {
+                return Some("递归或强制删除");
+            }
+        }
+    }
+    None
+}
 
 /// 命中黑名单时返回原因说明，否则返回 None。
 pub fn check_dangerous(command: &str) -> Option<&'static str> {
@@ -64,6 +153,7 @@ pub fn check_dangerous(command: &str) -> Option<&'static str> {
         .iter()
         .find(|(pat, _)| normalized.contains(pat))
         .map(|(_, reason)| *reason)
+        .or_else(|| check_destructive_delete(&normalized))
 }
 
 /// 解码子进程输出字节。
@@ -309,7 +399,6 @@ mod tests {
             "git diff --stat",
             "python -c \"print(1)\"",
             "rm file.txt",
-            "rm -rf node_modules",
             "ls -la",
             "grep -rn 'TODO' src/",
             "echo hello world",
@@ -328,6 +417,118 @@ mod tests {
         // 也一律拦截。误拦的代价远小于漏拦。
         assert!(check_dangerous("echo 'rm -rf /'").is_some());
         assert!(check_dangerous("echo 'mkfs'").is_some());
+    }
+
+    // ---- 解释器绕过：v0.4.4 修复的核心缺口 ----
+    //
+    // 原实现只做小写字面子串匹配，而 `powershell -Command "..."` 把命令
+    // 当**数据**传给解释器，整条执行语义对匹配器不可见。于是模型被拦下
+    // `rmdir /s /q x` 后，改用 `Remove-Item -Recurse -Force x` 即可绕���，
+    // 用户实测确认了这个路径。
+
+    #[test]
+    fn blocks_destructive_delete_behind_powershell() {
+        for cmd in [
+            "powershell -Command \"Remove-Item -Recurse -Force graph-algorithms\"",
+            "powershell -Command 'Remove-Item -Recurse x'",
+            "pwsh -c \"rd /s /q x\"",
+            "pwsh -NoProfile -Command \"Remove-Item -Recurse -Force $env:TEMP\"",
+            "powershell.exe -Command \"ri -Recurse -Force x\"",
+            "cmd /c \"rmdir /s /q x\"",
+        ] {
+            assert!(
+                check_dangerous(cmd).is_some(),
+                "解释器包装的递归删除必须被拦下: {cmd}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_destructive_delete_across_shell_operators() {
+        // 运算符拼接不得成为绕过路径
+        for cmd in [
+            "cd x && Remove-Item -Recurse -Force y",
+            "echo hi; remove-item -force z",
+            "echo a | rm -rf node_modules",
+        ] {
+            assert!(
+                check_dangerous(cmd).is_some(),
+                "运算符拼接的递归删除必须被拦下: {cmd}"
+            );
+        }
+    }
+
+    /// v0.4.4 的行为变更：紧凑短横线递归删除一律拦截。
+    ///
+    /// 此前 `rm -rf <具体目录>` 是放行的（原黑名单只有 `rm -rf /`、`rm -rf ~`
+    /// 和 `rm -rf *` 三条）。但 `rm -rf node_modules` 同样会递归删除整个目录树，
+    /// 用户实测中模型正是用这类命令把刚建好的项目目录删掉重来。
+    ///
+    /// 代价：清理 node_modules 这类操作现在需要用户手动执行。
+    /// 这是刻意的取舍——误拦的代价远小于误删。
+    #[test]
+    fn recursive_delete_with_named_target_is_now_blocked() {
+        for cmd in [
+            "rm -rf node_modules",
+            "rm -rf build",
+            "rm -rf ./dist",
+            "rm -rf /tmp/foo",
+        ] {
+            assert!(
+                check_dangerous(cmd).is_some(),
+                "带具体路径的递归删除现在也应拦下: {cmd}"
+            );
+        }
+    }
+
+    /// 短别名必须按词边界匹配，否则会大面积误伤正常命令。
+    #[test]
+    fn short_aliases_do_not_match_inside_words() {
+        for ok in [
+            "mkdir build",
+            "rmdir2 utility",
+            "cargo build --release",
+            "npm run third",
+            "git rm --cached node_modules",
+            "echo removing files",
+            "firmware update",
+        ] {
+            assert!(
+                check_dangerous(ok).is_none(),
+                "词边界内的别名不应误判: {ok}"
+            );
+        }
+    }
+
+    /// 删除动词单独出现是合法的，只在与递归/强制标志组合时才危险。
+    #[test]
+    fn plain_delete_without_flags_stays_allowed() {
+        for ok in [
+            "rm file.txt",
+            "rm old.log",
+            "del app.log",
+            "rd folder",
+        ] {
+            assert!(
+                check_dangerous(ok).is_none(),
+                "无递归/强制标志的删除应放行: {ok}"
+            );
+        }
+    }
+
+    #[test]
+    fn blocks_other_destructive_powershell_cmdlets() {
+        for cmd in [
+            "powershell -Command \"Format-Volume C\"",
+            "Stop-Computer -Force",
+            "Clear-Content C:\\important.txt",
+            "Invoke-Expression $cmd",
+        ] {
+            assert!(
+                check_dangerous(cmd).is_some(),
+                "高危 cmdlet 必须被拦下: {cmd}"
+            );
+        }
     }
 
     #[test]
