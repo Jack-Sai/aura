@@ -10,6 +10,7 @@ use crate::api::Router;
 use crate::tools;
 use super::context::{compress, estimate_tokens, local_trim, needs_compression};
 use super::keepawake::KeepAwake;
+use super::mode::Mode;
 use super::parser::{Event, Finish, Parser};
 use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
 
@@ -53,6 +54,8 @@ pub struct TurnContext<'a> {
     pub model_idx: &'a mut usize,
     pub session_id: &'a str,
     pub cancelled: &'a AtomicBool,
+    /// 本轮会话模式，决定可用工具与 prompt 形态。默认 Chat 以兼容既有调用方。
+    pub mode: Mode,
 }
 
 enum Next {
@@ -393,14 +396,23 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let next = {
             let raw = tool_json.clone().unwrap_or_default();
             match parse_tool_call(&raw) {
-                Ok((name, args)) if is_known_tool(&name) => {
-                    Next::Tool(normalize_tool_name(&name), args)
+                Ok((name, args)) => {
+                    let norm = normalize_tool_name(&name);
+                    if !is_known_tool(&norm) {
+                        Next::Reject(format!(
+                            "unknown tool '{}'，可用工具为 {}",
+                            name,
+                            crate::tools::registry::names().join("、")
+                        ))
+                    } else if !ctx.mode.allows(&norm) {
+                        // 模式隔离的硬闸门：prompt 已声明 Plan 只读，但模型
+                        // 仍可能幻觉调用写工具。此处拒绝并回传可操作的提示，
+                        // 让模型改用只读方式继续，而不是静默丢弃。
+                        Next::Reject(ctx.mode.reject_reason(&norm))
+                    } else {
+                        Next::Tool(norm, args)
+                    }
                 }
-                Ok((name, _)) => Next::Reject(format!(
-                    "unknown tool '{}'，可用工具为 {}",
-                    name,
-                    crate::tools::registry::names().join("、")
-                )),
                 Err(msg) => Next::Reject(msg),
             }
         };

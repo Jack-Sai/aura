@@ -8,6 +8,7 @@ use serde_json::Value;
 use tauri::{AppHandle, State};
 use tokio::sync::Mutex as AsyncMutex;
 
+use crate::agent::mode::Mode;
 use crate::agent::runner::{run_turn, TurnContext};
 use crate::api::config::{load_config, normalize, save_config};
 use crate::api::{ProviderConfig, Router};
@@ -115,6 +116,7 @@ pub async fn send_message(
     state: State<'_, AppState>,
     session_id: String,
     message: String,
+    mode: Option<String>,
 ) -> Result<(), String> {
     let message = message.trim();
     if message.is_empty() {
@@ -123,6 +125,8 @@ pub async fn send_message(
     if !state.router.has_credentials() {
         return Err("未配置模型服务凭据，请在设置中填写 API Key".into());
     }
+    // 每次发送时采用当前模式；缺省或无法识别时回落 Chat
+    let mode = Mode::parse(mode.as_deref().unwrap_or_default());
     state.cancelled.store(false, Ordering::Relaxed);
     let workspace = state.workspace.lock().map_err(lock_err)?.clone();
     let global_rules = state.global_rules.lock().map_err(lock_err)?.clone();
@@ -151,6 +155,7 @@ pub async fn send_message(
             model_idx: &mut session.model_idx,
             session_id: &session_id,
             cancelled: &state.cancelled,
+            mode,
         };
         run_turn(&mut ctx, message).await
     };

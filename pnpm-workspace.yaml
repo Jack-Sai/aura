@@ -1,0 +1,4 @@
+# pnpm v11 用 allowBuilds 取代了 v10 的 onlyBuiltDependencies。
+# esbuild 是 vite/vitest 的原生依赖，不执行其构建脚本将无法运行。
+allowBuilds:
+  esbuild: true

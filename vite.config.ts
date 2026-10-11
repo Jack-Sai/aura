@@ -30,4 +30,14 @@ export default defineConfig(() => ({
       ignored: ["**/src-tauri/**"],
     },
   },
+
+  // v0.4.0：前端此前零测试覆盖，模式切换与 TODO 状态机引入后
+  // 风险上升，故接入 vitest。jsdom 而非 happy-dom 是因为
+  // Markdown/katex 渲染需要更完整的 DOM 实现。
+  test: {
+    environment: "jsdom",
+    globals: true,
+    setupFiles: ["./src/test/setup.ts"],
+    include: ["src/**/*.test.{ts,tsx}"],
+  },
 }));
