@@ -101,14 +101,24 @@ fn mode_section(mode: Mode) -> String {
             .to_string(),
         Mode::Build => "\n# 当前模式：执行（Build）\n\
              - 本模式允许写入文件与执行命令，按既定目标把事情做完。\n\
-             - 若上下文中已有计划（todo_plan），请逐步推进，并在**开始或完成**某一步时\
-             更新其状态：\n\
+             - prompt 末尾的「当前任务清单」即为待办事项，请按顺序逐步推进，\
+并在**开始或完成**某一步时更新其状态：\n\
              <todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>\n\
              - status 只取 pending / in_progress / done 三值；一次最多更新一个步骤。\n\
              - 不要跳过中间步骤直接宣布完成；每步做完应先验证（读文件或跑命令）再标记 done。\n\
              - 全部步骤 done 后，用 <answer> 汇总实际改动与验证结果。\n"
             .to_string(),
     }
+}
+
+/// 小模型在有清单时必须知道如何更新进度，否则清单永远停在初始状态。
+///
+/// 精简 prompt 原则上不带任何协议说明，但清单是**已经在进行中**的状态，
+/// 缺了这条协议小模型会从头到尾不更新一次，面板就成了摆设。
+/// 因此只在确有清单时追加，代价是几行 token。
+pub fn todo_update_brief() -> &'static str {
+    "\n更新任务进度：<todo_update>{\"id\":\"步骤id\",\"status\":\"in_progress\"}</todo_update>\
+     （status 取 pending / in_progress / done，开始与完成某一步时各更新一次）\n"
 }
 
 /// 精简版 System Prompt（用于小参数本地模型，减少 Token 消耗与认知负荷）。
@@ -274,12 +284,42 @@ mod tests {
         assert!(compact.len() < full.len() / 2);
     }
 
-    /// Plan 模式的小模型必须走完整 prompt，否则拿不到 <todo_plan> 协议。
-    #[test]
+/// Plan 模式的小模型必须走完整 prompt，否则拿不到 <todo_plan> 协议。
+#[test]
     fn plan_prompt_is_longer_than_compact_but_has_no_write_tools() {
         let plan = build_system_prompt("/ws", "", Mode::Plan);
         let compact = build_compact_system_prompt("/ws", "");
         assert!(plan.len() > compact.len());
         assert!(!plan.contains("write_file"));
+    }
+
+    #[test]
+    fn build_prompt_points_at_the_injected_todo_section() {
+        // 清单是以「当前任务清单」段落注入的，措辞必须指向它，
+        // 而不是指向已废弃的「上下文中已有计划（todo_plan）」
+        let p = build_system_prompt("/ws", "", Mode::Build);
+        assert!(p.contains("当前任务清单"));
+        assert!(!p.contains("已有计划（todo_plan）"));
+    }
+
+    #[test]
+    fn compact_prompt_alone_lacks_todo_protocol() {
+        // 精简 prompt 的设计前提就是不带协议；这条断言把该前提固定下来，
+        // 防止后续有人「顺手」往里加内容
+        let p = build_compact_system_prompt("/ws", "");
+        assert!(!p.contains("<todo_update>"));
+    }
+
+    #[test]
+    fn todo_update_brief_is_minimal_but_actionable() {
+        let b = todo_update_brief();
+        assert!(b.contains("<todo_update>"));
+        assert!(b.contains("in_progress"));
+        // 三种状态必须齐全，否则模型不知道待执行怎么写
+        for s in ["pending", "in_progress", "done"] {
+            assert!(b.contains(s), "brief 应说明状态 {s}");
+        }
+        // 必须够短，短到不破坏精简 prompt 的初衷
+        assert!(b.len() < 220, "brief 过长会拖垮小模型的上下文预算");
     }
 }

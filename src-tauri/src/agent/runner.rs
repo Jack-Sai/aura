@@ -12,7 +12,9 @@ use super::context::{compress, estimate_tokens, local_trim, needs_compression};
 use super::keepawake::KeepAwake;
 use super::mode::Mode;
 use super::parser::{Event, Finish, Parser};
-use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
+use super::prompt::{
+    build_compact_system_prompt, build_system_prompt, is_small_model, todo_update_brief,
+};
 use super::todo;
 use super::{Todo, TodoStatus};
 
@@ -292,7 +294,14 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let system = if ctx.todos.is_empty() {
             system
         } else {
-            format!("{}{}", system, todo::render_for_prompt(ctx.todos))
+            let mut s = system;
+            // 小模型走的是精简 prompt，里面没有 todo_update 协议。
+            // 但清单已是进行中的状态，缺了协议就会从头到尾不更新一次
+            if is_small {
+                s.push_str(todo_update_brief());
+            }
+            s.push_str(&todo::render_for_prompt(ctx.todos));
+            s
         };
         let system_tokens = estimate_tokens(&system) + 4;
         if needs_compression(ctx.history, limit, system_tokens) {

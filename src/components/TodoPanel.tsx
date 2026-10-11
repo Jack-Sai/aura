@@ -1,5 +1,13 @@
 ﻿import { useMemo, useState } from "react";
-import { Check, ChevronDown, ChevronRight, Loader2, Play, Trash2 } from "lucide-react";
+import {
+  Check,
+  ChevronDown,
+  ChevronRight,
+  Loader2,
+  Play,
+  Plus,
+  Trash2,
+} from "lucide-react";
 import { displayOrder, doneCount, type Todo, type TodoStatus } from "../lib/todo";
 
 /** 折叠状态存 localStorage：跨会话共享一个偏好，符合侧边栏自身的既有做法。 */
@@ -10,6 +18,10 @@ interface Props {
   /** 开始执行：把当前清单带入 Build 模式 */
   onStartBuild?: () => void;
   onDeleteStep?: (id: string) => void;
+  /** 手动勾选/回退。模型不更新状态时的兜底 */
+  onToggleStep?: (id: string, next: TodoStatus) => void;
+  /** 手动新增步骤 */
+  onAddStep?: (title: string) => void;
   busy?: boolean;
 }
 
@@ -30,6 +42,18 @@ function statusLabel(status: TodoStatus): string {
 }
 
 /**
+ * 点击后的下一个状态：未开始→进行中，进行中→已完成，已完成→未开始。
+ *
+ * 做成三态循环而非「勾选框」：面板宽度有限，循环切换不占额外一行，
+ * 且「进行中」这个中间态在执行模式下确实有独立含义。
+ */
+function nextStatus(status: TodoStatus): TodoStatus {
+  if (status === "pending") return "in_progress";
+  if (status === "in_progress") return "done";
+  return "pending";
+}
+
+/**
  * 侧边栏任务清单面板。
  *
  * 放在侧边栏而非对话流有两个实际原因：
@@ -41,6 +65,8 @@ export default function TodoPanel({
   todos,
   onStartBuild,
   onDeleteStep,
+  onToggleStep,
+  onAddStep,
   busy,
 }: Props) {
   // 自管理折叠态：做成受控 prop 却没有任何父组件管理它，
@@ -48,12 +74,20 @@ export default function TodoPanel({
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
+  const [draft, setDraft] = useState("");
 
   function toggleCollapsed() {
     setCollapsed((v) => {
       localStorage.setItem(COLLAPSE_KEY, v ? "0" : "1");
       return !v;
     });
+  }
+
+  function submitDraft() {
+    const text = draft.trim();
+    if (!text || !onAddStep) return;
+    onAddStep(text);
+    setDraft("");
   }
 
   const ordered = useMemo(() => displayOrder(todos), [todos]);
@@ -97,9 +131,15 @@ export default function TodoPanel({
                     : "text-subtle",
                 ].join(" ")}
               >
-                <span className="mt-0.5 shrink-0">
+                <button
+                  type="button"
+                  aria-label={`步骤状态：${statusLabel(t.status)}`}
+                  onClick={onToggleStep ? () => onToggleStep(t.id, nextStatus(t.status)) : undefined}
+                  disabled={!onToggleStep}
+                  className="mt-0.5 shrink-0 transition-transform disabled:cursor-default enabled:hover:scale-110"
+                >
                   <StatusIcon status={t.status} />
-                </span>
+                </button>
                 <span className="min-w-0 flex-1">
                   <span
                     className={
@@ -125,6 +165,33 @@ export default function TodoPanel({
               </li>
             ))}
           </ol>
+
+          {onAddStep && (
+            <div className="mt-2 flex items-center gap-1">
+              <input
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") {
+                    e.preventDefault();
+                    submitDraft();
+                  }
+                }}
+                placeholder="添加步骤"
+                aria-label="添加步骤"
+                className="min-w-0 flex-1 rounded-md border border-line bg-transparent px-2 py-1 text-xs outline-none transition-colors placeholder:text-subtle focus:border-brand"
+              />
+              <button
+                type="button"
+                aria-label="新增步骤"
+                onClick={submitDraft}
+                disabled={!draft.trim()}
+                className="shrink-0 rounded-md border border-line p-1 text-subtle transition-colors hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
+              >
+                <Plus size={11} aria-hidden />
+              </button>
+            </div>
+          )}
 
           {onStartBuild && (
             <button

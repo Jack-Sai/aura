@@ -43,6 +43,8 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
     busy,
     startBuild,
     deleteTodoStep,
+    addTodoStep,
+    setTodoStatus,
   } = useStore();
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
@@ -201,6 +203,8 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
           todos={activeTodos}
           onStartBuild={mode === "plan" ? startBuild : undefined}
           onDeleteStep={deleteTodoStep}
+          onToggleStep={setTodoStatus}
+          onAddStep={addTodoStep}
           busy={busy}
         />
       )}

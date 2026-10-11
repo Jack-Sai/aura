@@ -166,4 +166,83 @@ describe("TodoPanel", () => {
     const list = screen.getByRole("list");
     expect(within(list).getAllByRole("listitem")).toHaveLength(1);
   });
+
+  describe("手动推进状态", () => {
+    it("待执行 → 进行中", async () => {
+      const onToggle = vi.fn();
+      render(
+        <TodoPanel
+          todos={todos([{ id: "s1", title: "甲", status: "pending" }])}
+          onToggleStep={onToggle}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "步骤状态：待执行" }));
+      expect(onToggle).toHaveBeenCalledWith("s1", "in_progress");
+    });
+
+    it("进行中 → 已完成", async () => {
+      const onToggle = vi.fn();
+      render(
+        <TodoPanel
+          todos={todos([{ id: "s1", title: "甲", status: "in_progress" }])}
+          onToggleStep={onToggle}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "步骤状态：进行中" }));
+      expect(onToggle).toHaveBeenCalledWith("s1", "done");
+    });
+
+    it("已完成 → 待执行，可回退重做", async () => {
+      const onToggle = vi.fn();
+      render(
+        <TodoPanel
+          todos={todos([{ id: "s1", title: "甲", status: "done" }])}
+          onToggleStep={onToggle}
+        />,
+      );
+      await userEvent.click(screen.getByRole("button", { name: "步骤状态：已完成" }));
+      expect(onToggle).toHaveBeenCalledWith("s1", "pending");
+    });
+
+    it("无 onToggleStep 时状态图标不可点击", () => {
+      render(<TodoPanel todos={todos([{ id: "s1", title: "甲" }])} />);
+      expect(screen.getByRole("button", { name: "步骤状态：待执行" })).toBeDisabled();
+    });
+  });
+
+  describe("手动新增步骤", () => {
+    it("输入后回车新增", async () => {
+      const onAdd = vi.fn();
+      render(
+        <TodoPanel todos={todos([{ id: "s1", title: "甲" }])} onAddStep={onAdd} />,
+      );
+      const input = screen.getByRole("textbox", { name: "添加步骤" });
+      await userEvent.type(input, "补充测试");
+      await userEvent.keyboard("{Enter}");
+      expect(onAdd).toHaveBeenCalledWith("补充测试");
+    });
+
+    it("空白内容不触发新增", async () => {
+      const onAdd = vi.fn();
+      render(
+        <TodoPanel todos={todos([{ id: "s1", title: "甲" }])} onAddStep={onAdd} />,
+      );
+      await userEvent.type(screen.getByRole("textbox", { name: "添加步骤" }), "   ");
+      await userEvent.keyboard("{Enter}");
+      expect(onAdd).not.toHaveBeenCalled();
+    });
+
+    it("新增后清空输入框", async () => {
+      render(<TodoPanel todos={todos([{ id: "s1", title: "甲" }])} onAddStep={() => {}} />);
+      const input = screen.getByRole("textbox", { name: "添加步骤" }) as HTMLInputElement;
+      await userEvent.type(input, "新步骤");
+      await userEvent.keyboard("{Enter}");
+      expect(input.value).toBe("");
+    });
+
+    it("无 onAddStep 时不渲染输入框", () => {
+      render(<TodoPanel todos={todos([{ id: "s1", title: "甲" }])} />);
+      expect(screen.queryByRole("textbox", { name: "添加步骤" })).toBeNull();
+    });
+  });
 });
