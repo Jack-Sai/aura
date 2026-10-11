@@ -95,10 +95,7 @@ fn parse_tool_call(raw: &str) -> Result<(String, Value), String> {
 }
 
 fn is_known_tool(name: &str) -> bool {
-    matches!(
-        normalize_tool_name(name).as_str(),
-        "list_files" | "read_file" | "search_workspace"
-    )
+    crate::tools::is_known(&normalize_tool_name(name))
 }
 
 fn write_diag_log(info: &str) {
@@ -361,8 +358,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     Next::Tool(normalize_tool_name(&name), args)
                 }
                 Ok((name, _)) => Next::Reject(format!(
-                    "unknown tool '{}'，可用工具为 list_files、read_file、search_workspace",
-                    name
+                    "unknown tool '{}'，可用工具为 {}",
+                    name,
+                    crate::tools::registry::names().join("、")
                 )),
                 Err(msg) => Next::Reject(msg),
             }
@@ -464,8 +462,13 @@ mod tests {
         assert!(is_known_tool("Read-File"));
         assert!(is_known_tool("read file"));
         assert!(is_known_tool("READ_FILE"));
-        assert!(!is_known_tool("write_file"));
         assert_eq!(normalize_tool_name(" Read-File "), "read_file");
+        // 未注册的工具应被拒绝；判定与注册表联动，不硬编码工具名
+        assert!(!is_known_tool("definitely_not_a_tool"));
+        // 每个已注册工具的原始名与归一化名都应通过
+        for name in crate::tools::registry::names() {
+            assert!(is_known_tool(name), "注册表工具未通过校验: {}", name);
+        }
     }
 
     #[test]

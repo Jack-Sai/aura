@@ -1,3 +1,5 @@
+use crate::tools::{registry, ToolKind};
+
 pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
     let mut p = String::new();
     p.push_str(
@@ -8,18 +10,8 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
     p.push_str(workspace);
     p.push('\n');
 
-    p.push_str(
-        "\n# 可用工具\n\
-         需要调用工具时，输出如下格式的 JSON（必须同时包含 name 与 args，JSON 必须合法）：\n\
-         <tool>{\"name\": \"工具名\", \"args\": {参数}}</tool>\n\n\
-         1. list_files：单层列举目录，不递归。\n\
-            {\"path\": \"src/\"}（工作区根目录写 /）\n\
-            返回该层的文件与子目录列表，子目录以 / 结尾。\n\
-         2. read_file：读取文本文件的指定行区间，返回带行号的内容。\n\
-            {\"path\": \"src/main.rs\", \"start_line\": 1, \"end_line\": \"end\"}（end_line 也可为数字）\n\
-         3. search_workspace：在工作区全文检索，返回带文件路径和行号的片段。\n\
-            {\"query\": \"关键词\"}\n",
-    );
+    // 工具清单由注册表生成，新增工具无需改动此处
+    p.push_str(&registry::prompt_section(&[ToolKind::Read, ToolKind::Write]));
 
     p.push_str(
         "\n# 输出规则\n\
@@ -52,12 +44,15 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
 }
 
 /// 精简版 System Prompt（用于小参数本地模型，减少 Token 消耗与认知负荷）。
+///
+/// 只注入只读工具：小模型难以稳定执行多轮写入，强行注入反而更易触发解析重试耗尽。
 pub fn build_compact_system_prompt(workspace: &str, global_rules: &str) -> String {
+    let read_tools = registry::names_by_kind(ToolKind::Read).join("、");
     let mut p = String::new();
-    p.push_str(
-        "你是 Aura，在本地工作区运行的 AI Agent。可用工具：list_files、read_file、search_workspace。\n\
-         工作区：",
-    );
+    p.push_str(&format!(
+        "你是 Aura，在本地工作区运行的 AI Agent。可用工具：{}。\n工作区：",
+        read_tools
+    ));
     p.push_str(workspace);
     p.push('\n');
 

@@ -1,9 +1,12 @@
 pub mod fs_ops;
+pub mod registry;
 pub mod search;
 
 use std::path::{Path, PathBuf};
 
 use serde_json::Value;
+
+pub use registry::{is_known, ToolKind};
 
 pub struct ToolOutput {
     pub label: String,
@@ -15,42 +18,11 @@ pub struct ToolFail {
     pub error: String,
 }
 
+/// 生成 UI 动作文案。工具列表见 `registry::TOOLS`。
 pub fn tool_label(name: &str, args: &Value) -> String {
-    match name {
-        "list_files" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("/")
-                .trim();
-            if path == "/" || path.is_empty() {
-                "Read /".to_string()
-            } else {
-                format!("Read {}/", display_path(path))
-            }
-        }
-        "read_file" => {
-            let path = args
-                .get("path")
-                .and_then(|v| v.as_str())
-                .unwrap_or("");
-            let start = args.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1);
-            let end = match args.get("end_line") {
-                Some(Value::Number(n)) => n.to_string(),
-                _ => "end".to_string(),
-            };
-            if start == 1 && end == "end" {
-                format!("Read {}", display_path(path))
-            } else {
-                format!("Read {} L{} - L{}", display_path(path), start, end)
-            }
-        }
-        "search_workspace" => {
-            let query = args.get("query").and_then(|v| v.as_str()).unwrap_or("");
-            format!("Search '{}'", query)
-        }
-        other => other.to_string(),
-    }
+    registry::find(name)
+        .map(|t| (t.label)(args))
+        .unwrap_or_else(|| name.to_string())
 }
 
 pub fn resolve_path(root: &Path, path: &str) -> Result<PathBuf, String> {
@@ -94,7 +66,7 @@ pub fn ensure_inside(root: &Path, target: &Path) -> Result<PathBuf, String> {
     Ok(target_c)
 }
 
-fn display_path(path: &str) -> String {
+pub(crate) fn display_path(path: &str) -> String {
     let p = path.trim().trim_start_matches("./");
     if p.is_empty() || p == "." {
         "/".to_string()
@@ -105,11 +77,9 @@ fn display_path(path: &str) -> String {
 
 pub fn execute(workspace: &Path, name: &str, args: &Value) -> Result<ToolOutput, ToolFail> {
     let label = tool_label(name, args);
-    let result = match name {
-        "list_files" => fs_ops::list_files(workspace, args),
-        "read_file" => fs_ops::read_file(workspace, args),
-        "search_workspace" => search::search_workspace(workspace, args),
-        other => Err(format!("未知工具: {}", other)),
+    let result = match registry::find(name) {
+        Some(spec) => (spec.run)(workspace, args),
+        None => Err(format!("未知工具: {}", name)),
     };
     result.map_err(|error| ToolFail { label, error })
 }
