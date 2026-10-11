@@ -33,6 +33,8 @@ export type BlockKind = "text" | "action" | "notice" | "error";
 export interface Block {
   kind: BlockKind;
   text: string;
+  /** action 块专用：工具是否执行成功 */
+  ok?: boolean;
 }
 
 export type ChatMessage =
@@ -186,11 +188,13 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     const on = async (
       name: string,
-      cb: (payload: { session_id: string; text?: string }) => void,
+      cb: (payload: { session_id: string; text?: string; ok?: boolean }) => void,
     ) => {
-      const un = await listen<{ session_id: string; text?: string }>(name, (e) =>
-        cb(e.payload),
-      );
+      const un = await listen<{
+        session_id: string;
+        text?: string;
+        ok?: boolean;
+      }>(name, (e) => cb(e.payload));
       if (disposed) un();
       else unsubs.push(un);
     };
@@ -205,7 +209,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!stream || stream.sessionId !== p.session_id) return;
       appendBlocks(stream.sessionId, stream.messageId, (b) => [
         ...b,
-        { kind: "action", text: p.text ?? "" },
+        // ok 由后端给出；旧版本事件无此字段时按成功处理
+        { kind: "action", text: p.text ?? "", ok: p.ok !== false },
       ]);
     });
     on("agent:notice", (p) => {

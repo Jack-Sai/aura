@@ -23,15 +23,31 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
          禁止直接输出裸文本作为回答。\n",
     );
 
-    p.push_str(
+    // 写入类工具的使用纪律：只在存在 Write 类工具时注入
+    if !registry::names_by_kind(ToolKind::Write).is_empty() {
+        p.push_str(
+            "\n# 修改文件\n\
+             - 改动已有文件前必须先 read_file 确认现有内容，禁止凭猜测直接覆写。\n\
+             - 优先 string_replace 做局部修改（最省 Token）；\
+             仅在新建文件或整体重写时才用 write_file，它会覆盖文件全部内容。\n\
+             - 成块替换一段代码时用 replace_lines，new_content 必须是该区间的完整新文本。\n\
+             - string_replace 的 old_string 必须与文件内容完全一致（含缩进与空格）；\
+             报「未找到」时先重新 read_file 对照，不要反复重试同样的参数。\n\
+             - 一次工具调用只改一个文件，改完确认结果再改下一个。\n\
+             - 写工具只会返回写入摘要而非文件内容；需要确认改对了什么，再 read_file 查看。\n",
+        );
+    }
+
+    p.push_str(&format!(
         "\n# 运行限制\n\
          - 所有路径必须使用正斜杠 /，且必须位于工作区内；禁止绝对路径、禁止 ..，越界会被直接拦截。\n\
-         - 同一个工具连续调用 5 次后，第 6 次会被拦截并返回报错；\
+         - 同一个工具连续调用 {} 次后会被拦截并返回报错；\
          此时请更换工具，或基于已有信息直接回答。\n\
          - 文件较大或不确定位置时，优先用 search_workspace 定位，再用 read_file 精读。\n\
          - 工具结果以 <tool_result> 形式返回；若以 Error: 开头说明失败，\
          读懂错误后调整参数重试，不要重复同样的调用。\n",
-    );
+        registry::max_consecutive("read_file")
+    ));
 
     let rules = global_rules.trim();
     if !rules.is_empty() {
@@ -89,6 +105,49 @@ pub fn is_small_model(model_id: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn full_prompt_includes_write_tools_and_discipline() {
+        let p = build_system_prompt("/ws", "");
+        // 写工具已注入
+        assert!(p.contains("write_file"));
+        assert!(p.contains("string_replace"));
+        assert!(p.contains("replace_lines"));
+        // 写入纪律段
+        assert!(p.contains("# 修改文件"));
+        assert!(p.contains("read_file 确认现有内容"));
+        // 连续调用上限来自注册表而非硬编码
+        assert!(p.contains(&format!(
+            "连续调用 {} 次",
+            crate::tools::registry::max_consecutive("read_file")
+        )));
+    }
+
+    #[test]
+    fn compact_prompt_excludes_write_tools() {
+        let p = build_compact_system_prompt("/ws", "");
+        // 小模型只给只读工具，避免多轮写入导致解析重试耗尽
+        assert!(!p.contains("write_file"));
+        assert!(!p.contains("string_replace"));
+        assert!(p.contains("read_file"));
+        // 工具名由注册表生成
+        assert!(p.contains("search_workspace"));
+    }
+
+    #[test]
+    fn global_rules_are_appended() {
+        let p = build_system_prompt("/ws", "始终使用中文注释");
+        assert!(p.contains("# 全局规则"));
+        assert!(p.contains("始终使用中文注释"));
+    }
+
+    #[test]
+    fn is_small_model_classification() {
+        assert!(is_small_model("qwen3:0.6b"));
+        assert!(is_small_model("phi3:3.8b"));
+        assert!(!is_small_model("gpt-4o"));
+        assert!(!is_small_model("deepseek-v4-pro"));
+    }
 
     #[test]
     fn small_model_detection() {

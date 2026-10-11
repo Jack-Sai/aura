@@ -42,6 +42,15 @@ fn emit_text(app: &AppHandle, session_id: &str, event: &str, text: &str) {
     let _ = app.emit(event, json!({ "session_id": session_id, "text": text }));
 }
 
+/// 工具动作事件。`ok` 区分成功与失败——此前成功与失败推送的是同一条
+/// 文案，用户无法分辨哪个操作出错了。
+fn emit_action(app: &AppHandle, session_id: &str, label: &str, ok: bool) {
+    let _ = app.emit(
+        EV_ACTION,
+        json!({ "session_id": session_id, "text": label, "ok": ok }),
+    );
+}
+
 fn emit_done(app: &AppHandle, session_id: &str) {
     let _ = app.emit(EV_DONE, json!({ "session_id": session_id }));
 }
@@ -412,18 +421,20 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     Some((prev, count)) if prev == name => Some((name.clone(), count + 1)),
                     _ => Some((name.clone(), 1)),
                 };
+                let tool_label = tools::tool_label(&name, &args);
 
                 let body = if over_limit {
+                    emit_action(ctx.app, ctx.session_id, &format!("{}（连续调用超限）", tool_label), false);
                     "Error: 连续调用次数超限，请尝试其他工具或基于现有信息直接回复。"
                         .to_string()
                 } else {
                     match tools::execute(ctx.workspace, &name, &args) {
                         Ok(out) => {
-                            emit_text(ctx.app, ctx.session_id, EV_ACTION, &out.label);
+                            emit_action(ctx.app, ctx.session_id, &out.label, true);
                             out.result
                         }
                         Err(fail) => {
-                            emit_text(ctx.app, ctx.session_id, EV_ACTION, &fail.label);
+                            emit_action(ctx.app, ctx.session_id, &fail.label, false);
                             format!("Error: {}", fail.error)
                         }
                     }

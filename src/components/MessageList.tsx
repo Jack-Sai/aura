@@ -17,7 +17,7 @@ function renderBlock(block: Block, i: number) {
     case "text":
       return <Markdown key={i} content={block.text} />;
     case "action":
-      return <ActionRow key={i} text={block.text} />;
+      return <ActionRow key={i} text={block.text} ok={block.ok} />;
     case "notice":
       return <NoticeRow key={i} text={block.text} />;
     case "error":
