@@ -32,6 +32,10 @@ tokio = { version = "1.53.2", features = ["sync", "macros", "time", "rt", "rt-mu
 encoding_rs = "0.8"
 tauri-plugin-dialog = "2.8.1"
 regex = "1.10"
+# v0.5.0：自动更新。Tauri v2 已内建包校验，无需额外 feature
+tauri-plugin-updater = "2"
+# 供 updater 在下载安装包时跟随系统代理
+tauri-plugin-process = "2"
 
 [features]
 # 生产构建启用；tauri dev 由 CLI 以 --no-default-features 关闭以使用 devUrl

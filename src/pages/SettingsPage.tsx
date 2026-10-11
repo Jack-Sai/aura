@@ -24,6 +24,7 @@ import {
   providerDisplayName,
 } from "../lib/providers";
 import { useStore } from "../store";
+import AboutSection from "./AboutSection";
 import Select from "../components/Select";
 
 interface Props {
@@ -36,6 +37,7 @@ const SECTIONS = [
   { id: "appearance", label: "外观" },
   { id: "model", label: "模型服务" },
   { id: "general", label: "通用" },
+  { id: "about", label: "关于" },
 ] as const;
 
 type SectionId = (typeof SECTIONS)[number]["id"];
@@ -1286,6 +1288,8 @@ export default function SettingsPage({ onClose, theme, setTheme }: Props) {
                 </div>
               </section>
             )}
+
+            {section === "about" && <AboutSection />}
           </div>
         </div>
       </div>
