@@ -18,9 +18,30 @@ pub const EV_NOTICE: &str = "agent:notice";
 pub const EV_ERROR: &str = "agent:error";
 pub const EV_DONE: &str = "agent:done";
 
-const MAX_TOOL_ROUNDS: usize = 50;
+/// 单轮对话允许的最大工具轮次。
+///
+/// v0.3.0 之前是 50，但写入任务一次完整闭环（读文件 → 改 → 编译 → 读报错
+/// → 再改 → 再编译…）轻易打满，表现为「模型被迫中止」。按每轮一次工具
+/// 调用估算，100 轮足以覆盖绝大多数真实任务。
+const MAX_TOOL_ROUNDS: usize = 100;
 const MAX_PARSE_RETRIES: u32 = 3;
 const MAX_PARSE_RETRIES_SMALL: u32 = 1;
+
+/// 连续调用节流键：工具名 + 作用目标。
+///
+/// 仅按工具名计数会误伤合法的批量修改——例如连续 10 次改同一个文件，
+/// 按名字计数会在第 6 次被无端拦截。加上目标后，「改 A 文件」与
+/// 「改 B 文件」互不干扰，而对同一文件反复死循环仍会被拦。
+fn throttle_key(name: &str, args: &Value) -> String {
+    let target = args
+        .get("path")
+        .and_then(|v| v.as_str())
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| "*".to_string());
+    format!("{}|{}", name, target)
+}
 
 pub struct TurnContext<'a> {
     pub app: &'a AppHandle,
@@ -384,6 +405,8 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         match next {
             Next::Reject(msg) => {
                 push_assistant(ctx.history, &turn_output);
+                // 工具压根没执行成功，不应计入连续调用节流
+                consecutive = None;
                 emit_text(
                     ctx.app,
                     ctx.session_id,
@@ -419,15 +442,20 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 push_assistant(ctx.history, &turn_output);
                 parse_failures = 0;
 
+                let tool_label = tools::tool_label(&name, &args);
+                // 节流按「工具 + 目标」计数，并使用注册表声明的上限
+                let throttle = throttle_key(&name, &args);
+                let limit = tools::registry::max_consecutive(&name);
                 let over_limit = matches!(
                     &consecutive,
-                    Some((prev, count)) if *prev == name && *count >= 5
+                    Some((prev, count)) if *prev == throttle && *count >= limit as usize
                 );
                 consecutive = match consecutive {
-                    Some((prev, count)) if prev == name => Some((name.clone(), count + 1)),
-                    _ => Some((name.clone(), 1)),
+                    Some((prev, count)) if prev == throttle => {
+                        Some((throttle, count + 1))
+                    }
+                    _ => Some((throttle, 1)),
                 };
-                let tool_label = tools::tool_label(&name, &args);
 
                 let body = if over_limit {
                     emit_action_detail(
@@ -503,6 +531,26 @@ mod tests {
         let raw = "```json\n{\"name\": \"list_files\", \"args\": {\"path\": \"/\"}}\n```";
         let (name, _) = parse_tool_call(raw).unwrap();
         assert_eq!(name, "list_files");
+    }
+
+    #[test]
+    fn throttle_key_distinguishes_targets() {
+        use serde_json::json;
+        // 同一工具不同目标 → 不同键，互不干扰
+        let a = throttle_key("write_file", &json!({ "path": "a.txt" }));
+        let b = throttle_key("write_file", &json!({ "path": "b.txt" }));
+        assert_ne!(a, b);
+        // 同一工具同一目标 → 同键，死循环仍会被拦
+        assert_eq!(a, throttle_key("write_file", &json!({ "path": "a.txt" })));
+        // 不同工具同一目标 → 不同键
+        assert_ne!(
+            throttle_key("write_file", &json!({ "path": "a.txt" })),
+            throttle_key("read_file", &json!({ "path": "a.txt" }))
+        );
+        // 无 path 参数（如 search_workspace）归入通配目标
+        let s1 = throttle_key("search_workspace", &json!({ "query": "x" }));
+        let s2 = throttle_key("search_workspace", &json!({ "query": "y" }));
+        assert_eq!(s1, s2);
     }
 
     #[test]
