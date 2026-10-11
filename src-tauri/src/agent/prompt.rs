@@ -62,7 +62,9 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str, mode: Mode) -> S
 
 p.push_str(&format!(
         "\n# 运行限制\n\
-         - 所有路径必须使用正斜杠 /，且必须位于工作区内；禁止绝对路径、禁止 ..，越界会被直接拦截。\n\
+         - 路径用正斜杠 /，且必须位于工作区内；禁止 ..，越界会被直接拦截。\n\
+         - 路径以 / 开头表示工作区根目录，例如 /src/main.rs 即工作区下的 src/main.rs；\
+         列举根目录写 / 即可。\n\
          - 同一个工具对**同一个目标**连续调用 {} 次后会被拦截并返回报错；\
          此时请更换工具或更换目标，或基于已有信息直接回答。\n\
          - 文件较大或不确定位置时，优先用 search_workspace 定位，再用 read_file 精读。\n\
@@ -136,7 +138,7 @@ pub fn build_compact_system_prompt(workspace: &str, global_rules: &str) -> Strin
     p.push_str(
         "工具调用格式：<tool>{\"name\": \"工具名\", \"args\": {...}}</tool>\n\
          最终回答用 <answer>...</answer> 包裹。\n\
-         路径用 /，禁绝对路径与 ..。\n",
+         路径用 /，以 / 开头表示工作区根目录，禁 ..。\n",
     );
 
     let rules = global_rules.trim();

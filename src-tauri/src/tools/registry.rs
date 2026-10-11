@@ -53,7 +53,7 @@ pub const TOOLS: &[ToolSpec] = &[
         name: "list_files",
         kind: ToolKind::Read,
         desc: "单层列举目录，不递归。返回该层的文件与子目录列表，子目录以 / 结尾。",
-        example: "{\"path\": \"src/\"}（工作区根目录写 /）",
+        example: "{\"path\": \"src/\"}（以 / 开头表示工作区根目录，如 /src/main.rs）",
         run: fs_ops::list_files,
         label: label_list_files,
         max_consecutive: READ_LIMIT,

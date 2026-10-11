@@ -37,11 +37,18 @@ pub fn resolve_path(root: &Path, path: &str) -> Result<PathBuf, String> {
     if path.contains('\\') {
         return Err("路径必须使用正斜杠 /，不能使用反斜杠".into());
     }
-    if path == "/" {
+    // 前导 `/` 视为「工作区根目录」，而非系统绝对路径。
+    //
+    // 此前只把**恰好等于** `/` 的路径当作根目录白名单，其余以 `/` 开头的
+    // 一律拒绝。但工具示例明确教模型「工作区根目录写 /」，模型据此推断
+    // `/index.html` = 根下文件并被拒——规范自相矛盾，模型并没有错。
+    //
+    // 安全性不受影响：这里剥离后仍从 `root` 出发逐段 push，产出的永远是
+    // `<root>/<若干段>`；真正的越界由下游 `ensure_inside` /
+    // `resolve_path_for_write` 两道 `canonicalize + starts_with` 闸门拦截。
+    let path = path.trim_start_matches('/');
+    if path.is_empty() {
         return Ok(root.to_path_buf());
-    }
-    if path.starts_with('/') {
-        return Err("禁止绝对路径，只能使用相对工作区根目录的路径（根目录用 /）".into());
     }
     if path.len() >= 2 && path.as_bytes()[1] == b':' {
         return Err("禁止绝对路径，只能使用相对工作区根目录的路径".into());
@@ -161,7 +168,9 @@ pub fn atomic_write(target: &Path, content: &str) -> Result<(), String> {
 }
 
 pub(crate) fn display_path(path: &str) -> String {
-    let p = path.trim().trim_start_matches("./");
+    // 前导 `/` 已被 resolve_path 视为根目录，展示时去掉以免
+    // 让 `Read /index.html` 看起来像在访问系统绝对路径
+    let p = path.trim().trim_start_matches("./").trim_start_matches('/');
     if p.is_empty() || p == "." {
         "/".to_string()
     } else {
@@ -215,13 +224,55 @@ mod tests {
     }
 
     #[test]
-    fn rejects_traversal_and_absolute() {
+fn rejects_traversal_and_absolute() {
         assert!(resolve_path(&root(), "../etc").is_err());
         assert!(resolve_path(&root(), "a/../../b").is_err());
-        assert!(resolve_path(&root(), "/etc/passwd").is_err());
         assert!(resolve_path(&root(), "C:/Windows").is_err());
         assert!(resolve_path(&root(), "a\\b").is_err());
         assert!(resolve_path(&root(), "").is_err());
+    }
+
+    /// 前导 `/` 现在表示工作区根目录。
+    ///
+    /// 模型被明确教过「根目录写 /」，据此推断 `/index.html` 指向根下文件
+    /// 是合理推断，拒它是规范自相矛盾。这里固定新语义。
+    #[test]
+    fn leading_slash_resolves_inside_workspace() {
+        let r = root();
+        assert_eq!(resolve_path(&r, "/").unwrap(), r);
+        assert_eq!(resolve_path(&r, "/index.html").unwrap(), r.join("index.html"));
+        assert_eq!(
+            resolve_path(&r, "/src/main.rs").unwrap(),
+            r.join("src").join("main.rs")
+        );
+        // 多个前导斜杠同样按根目录处理
+        assert_eq!(resolve_path(&r, "//index.html").unwrap(), r.join("index.html"));
+    }
+
+    /// 宽容处理不等于放弃沙盒：`/etc/passwd` 解析到工作区内，
+    /// 但它不存在，真正的访问仍由 `ensure_inside` 拦下。
+    #[test]
+    fn leading_slash_still_cannot_escape_workspace() {
+        let (ws, outside, base) = sandbox_fixture("leading_slash");
+        // 解析结果始终在 root 之下
+        let p = resolve_path(&ws, "/etc/passwd").unwrap();
+        assert!(p.starts_with(&ws));
+        // 工作区内不存在该文件 → ensure_inside 拒绝
+        assert!(ensure_inside(&ws, &p).is_err());
+        let _ = std::fs::remove_dir_all(&base);
+        let _ = outside;
+    }
+
+    /// 磁盘盘符仍必须拒绝：它是真正的系统绝对路径，不能被当成根目录下的相对路径。
+    #[test]
+    fn windows_drive_letters_remain_rejected() {
+        let r = root();
+        assert!(resolve_path(&r, "C:/Windows").is_err());
+        assert!(resolve_path(&r, "c:/windows").is_err());
+        assert!(resolve_path(&r, "e:aura").is_err());
+        assert!(resolve_path(&r, "C:\\Windows").is_err());
+        // UNC 同样拒绝
+        assert!(resolve_path(&r, "\\\\server\\share").is_err());
     }
 
     #[test]
@@ -231,12 +282,14 @@ mod tests {
         assert!(resolve_path(&root(), "a/b/../../../c").is_err());
         assert!(resolve_path(&root(), "./../x").is_err());
         assert!(resolve_path(&root(), "a/./..").is_err());
-        // 小写盘符
+// 小写盘符
         assert!(resolve_path(&root(), "c:/windows").is_err());
         assert!(resolve_path(&root(), "e:aura").is_err());
-        // UNC / 协议式绝对路径（前导斜杠或反斜杠）
-        assert!(resolve_path(&root(), "//server/share").is_err());
+        // UNC 反斜杠形式仍拒绝
         assert!(resolve_path(&root(), "\\\\server\\share").is_err());
+        // 前导斜杠已按根目录处理（见 leading_slash_resolves_inside_workspace），
+        // 因此 //server/share 会解析到工作区内而非被当作 UNC
+        assert!(resolve_path(&root(), "//server/share").is_ok());
         assert!(resolve_path(&root(), "file:///c:/x").is_ok()); // 相对路径，由 ensure_inside 兜底
     }
 
@@ -311,14 +364,22 @@ mod tests {
     }
 
     #[test]
-    fn write_path_rejects_traversal_and_absolute() {
+fn write_path_rejects_traversal_and_absolute() {
         let (ws, _outside, base) = sandbox_fixture("write_reject");
         assert!(resolve_path_for_write(&ws, "../evil.txt").is_err());
         assert!(resolve_path_for_write(&ws, "a/../../evil.txt").is_err());
-        assert!(resolve_path_for_write(&ws, "/etc/passwd").is_err());
         assert!(resolve_path_for_write(&ws, "C:/Windows/evil").is_err());
         assert!(resolve_path_for_write(&ws, "a\\b").is_err());
+        // 前导斜杠不再直接报错。返回的是 canonicalize 后的路径，
+        // 与传入的 ws 可能字面不同（如大小写、短路径展开），故先取其盘符前缀
+        assert!(resolve_path_for_write(&ws, "/evil.txt").is_ok());
+        // 关键：写路径解析必须在工作区内创建/命中，不得落到外部
+        let (other, _outside2, base2) = sandbox_fixture("write_reject_ok");
+        assert!(resolve_path_for_write(&other, "/sub/evil.txt")
+            .unwrap()
+            .starts_with(std::fs::canonicalize(&other).unwrap()));
         let _ = std::fs::remove_dir_all(&base);
+        let _ = std::fs::remove_dir_all(&base2);
     }
 
     #[test]
