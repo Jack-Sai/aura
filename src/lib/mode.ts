@@ -18,11 +18,15 @@ export const MODE_LABEL: Record<Mode, string> = {
   build: "执行",
 };
 
-/** 模式的一句话说明，作为悬浮提示。 */
+/**
+ * 模式的一句话说明，作为悬浮提示。
+ *
+ * 三档是递进的：只读对话 → 只读并产出清单 → 全工具执行。
+ */
 export const MODE_HINT: Record<Mode, string> = {
-  chat: "自由对话，可读写文件并执行命令",
-  plan: "仅只读：先调研并产出计划，不改动任何文件",
-  build: "按计划执行，允许写入与命令",
+  chat: "纯对话：可读取文件与检索内容，不可修改文件或执行命令",
+  plan: "规划：只读调研后产出任务清单，不修改文件、不执行命令",
+  build: "执行：允许修改文件与执行命令，并按任务清单推进",
 };
 
 /**
@@ -38,8 +42,10 @@ export function normalizeMode(raw: unknown): Mode {
 }
 
 /**
- * Plan / Build 模式下应当呈现任务清单面板。
- * Chat 是自由对话，不展示面板以免干扰。
+ * 是否应呈现任务清单面板。
+ *
+ * 清单在规划与执行模式下才有意义：对话模式是纯问答，不涉及流程。
+ * 清单按会话隔离存储，切换会话自动换成对应会话的清单，不残留。
  */
 export function showsTodoPanel(mode: Mode, todoCount: number): boolean {
   return mode !== "chat" && todoCount > 0;

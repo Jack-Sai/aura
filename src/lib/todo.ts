@@ -80,6 +80,26 @@ export function applyTodoUpdate(
   return true;
 }
 
+/**
+ * 清单是否已全部完成。
+ *
+ * 用于「全部完成后自动清空」——任务做完即清场，避免旧清单长期占着
+ * 侧边栏，让下一次任务的计划面板从空白开始。
+ */
+export function isListComplete(todos: Todo[]): boolean {
+  return todos.length > 0 && todos.every((t) => t.status === "done");
+}
+
+/**
+ * 计算更新后的清单，若已全部完成则返回空数组。
+ *
+ * 把「更新」与「清空」合成一步，是为了让两者共享同一次落盘：
+ * 分开写会产生两次 invoke，且中间态会让面板闪一下再消失。
+ */
+export function applyAutoClear(todos: Todo[]): Todo[] {
+  return isListComplete(todos) ? [] : todos;
+}
+
 /** 生成新步骤的 id，避开清单中已有的编号。 */
 export function nextTodoId(todos: Todo[]): string {
   let n = todos.length + 1;

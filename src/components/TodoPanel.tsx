@@ -1,13 +1,5 @@
 ﻿import { useMemo, useState } from "react";
-import {
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Loader2,
-  Play,
-  Plus,
-  Trash2,
-} from "lucide-react";
+import { Check, ChevronDown, ChevronRight, Loader2, Plus, Trash2 } from "lucide-react";
 import { displayOrder, doneCount, type Todo, type TodoStatus } from "../lib/todo";
 
 /** 折叠状态存 localStorage：跨会话共享一个偏好，符合侧边栏自身的既有做法。 */
@@ -15,14 +7,11 @@ const COLLAPSE_KEY = "aura-todo-collapsed";
 
 interface Props {
   todos: Todo[];
-  /** 开始执行：把当前清单带入 Build 模式 */
-  onStartBuild?: () => void;
   onDeleteStep?: (id: string) => void;
   /** 手动勾选/回退。模型不更新状态时的兜底 */
   onToggleStep?: (id: string, next: TodoStatus) => void;
   /** 手动新增步骤 */
   onAddStep?: (title: string) => void;
-  busy?: boolean;
 }
 
 function StatusIcon({ status }: { status: TodoStatus }) {
@@ -63,11 +52,9 @@ function nextStatus(status: TodoStatus): TodoStatus {
  */
 export default function TodoPanel({
   todos,
-  onStartBuild,
   onDeleteStep,
   onToggleStep,
   onAddStep,
-  busy,
 }: Props) {
   // 自管理折叠态：做成受控 prop 却没有任何父组件管理它，
   // 等于把状态管理责任推给每个调用方，得不到好处
@@ -92,7 +79,6 @@ export default function TodoPanel({
 
   const ordered = useMemo(() => displayOrder(todos), [todos]);
   const done = doneCount(todos);
-  const allDone = done === todos.length;
 
   if (todos.length === 0) return null;
 
@@ -191,18 +177,6 @@ export default function TodoPanel({
                 <Plus size={11} aria-hidden />
               </button>
             </div>
-          )}
-
-          {onStartBuild && (
-            <button
-              type="button"
-              onClick={onStartBuild}
-              disabled={busy || allDone}
-              className="mt-3 flex w-full items-center justify-center gap-1.5 rounded-md border border-line bg-bubble py-1.5 text-xs transition-colors hover:border-brand hover:text-brand disabled:cursor-not-allowed disabled:opacity-40"
-            >
-              <Play size={12} aria-hidden />
-              {allDone ? "已全部完成" : "开始执行"}
-            </button>
           )}
         </div>
       )}

@@ -26,6 +26,7 @@ import {
 } from "./lib/api";
 import { type Mode } from "./lib/mode";
 import {
+  applyAutoClear,
   isTodoStatus,
   normalizeTodos,
   nextTodoId,
@@ -79,7 +80,7 @@ interface StoreValue extends State {
   startRename: (id: string) => void;
   cancelRename: () => void;
   renameSession: (id: string, title: string) => void;
-  sendMessage: (text: string, modeOverride?: Mode) => Promise<void>;
+  sendMessage: (text: string) => Promise<void>;
   stop: () => Promise<void>;
   switchWorkspace: (path: string) => Promise<void>;
   newSession: (workspace?: string) => Promise<void>;
@@ -89,7 +90,6 @@ interface StoreValue extends State {
   removeWorkspace: (path: string) => Promise<void>;
   setModel: (id: string) => Promise<void>;
   setMode: (m: Mode) => void;
-  startBuild: () => void;
   deleteTodoStep: (id: string) => void;
   addTodoStep: (title: string) => void;
   setTodoStatus: (id: string, status: TodoStatus) => void;
@@ -285,16 +285,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         if (!isTodoStatus(p.status)) return;
         setState((s) => ({
           ...s,
-          sessions: s.sessions.map((sess) =>
-            sess.id === p.session_id
-              ? {
-                  ...sess,
-                  todos: sess.todos.map((t) =>
-                    t.id === p.id ? { ...t, status: p.status as TodoStatus } : t,
-                  ),
-                }
-              : sess,
-          ),
+          sessions: s.sessions.map((sess) => {
+            if (sess.id !== p.session_id) return sess;
+            const next = sess.todos.map((t) =>
+              t.id === p.id ? { ...t, status: p.status as TodoStatus } : t,
+            );
+            // 全部完成后自动清空，任务做完即清场
+            return { ...sess, todos: applyAutoClear(next) };
+          }),
         }));
       },
     );
@@ -423,7 +421,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
    */
   const commitTodos = useCallback(
     async (sessionId: string, todos: Todo[]) => {
-      const clean = normalizeTodos(todos);
+      // 自动清空放在这里而不是各调用点：这是清单状态变更的唯一出口，
+      // 收在一处才不会漏掉某条路径（模型事件、勾选、新增都要经过）
+      const clean = applyAutoClear(normalizeTodos(todos));
       setState((s) => ({
         ...s,
         sessions: s.sessions.map((sess) =>
@@ -500,13 +500,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   }, []);
 
   const sendMessage = useCallback(
-    async (text: string, modeOverride?: Mode) => {
+    async (text: string) => {
       if (state.busy) return;
       const sessionId = state.activeId;
       if (!sessionId) return;
-      // 模式覆盖：setMode 是异步 setState，同一 tick 内读 stateRef 仍是旧值。
-      // 「开始执行」这类「切模式并立即发送」的调用必须显式指定，否则会发出 plan
-      const sendMode = modeOverride ?? stateRef.current.mode;
       setState((s) => ({ ...s, busy: true }));
       sawErrorRef.current = false;
       bufferRef.current = "";
@@ -539,7 +536,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }));
       persistNow(sessionId, title, current.workspace, messages);
       try {
-        await sendMessageApi(sessionId, text, sendMode);
+        await sendMessageApi(sessionId, text, stateRef.current.mode);
       } catch (e) {
         if (!sawErrorRef.current) {
           appendBlocks(sessionId, assistantMsg.id, (b) => [
@@ -562,29 +559,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     },
     [state.busy, state.activeId, appendBlocks, drainBuffer, persistNow],
   );
-
-  /**
-   * 从规划切换到执行：切模式并立即发起一轮。
-   *
-   * 只切模式是不够的——模型看不到「用户点了开始执行」这件事，
-   * 还得用户再手打一句「开始吧」。这里主动发起，把清单交给模型。
-   * 交接语不写具体步骤内容，清单会由后端注入 prompt，
-   * 避免同一份计划在对话流与 system prompt 里各存一份、易于不同步。
-   *
-   * 定义在 sendMessage 之后——它依赖 sendMessage。
-   */
-  const startBuild = useCallback(() => {
-    const sess = stateRef.current.sessions.find(
-      (x) => x.id === stateRef.current.activeId,
-    );
-    if (!sess || sess.todos.length === 0) {
-      setMode("build");
-      return;
-    }
-    if (stateRef.current.busy) return;
-    setMode("build");
-    void sendMessage("按上面的任务清单开始执行，先从第一个未完成的步骤入手。", "build");
-  }, [setMode, sendMessage]);
 
   const stop = useCallback(async () => {
     try {
@@ -711,7 +685,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeWorkspace,
       setModel,
       setMode,
-      startBuild,
       deleteTodoStep,
       addTodoStep,
       setTodoStatus,
@@ -733,7 +706,6 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       removeWorkspace,
       setModel,
       setMode,
-      startBuild,
       deleteTodoStep,
       addTodoStep,
       setTodoStatus,

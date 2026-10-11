@@ -105,45 +105,22 @@ describe("TodoPanel", () => {
     expect(onDelete).toHaveBeenCalledWith("s7");
   });
 
-  it("全部完成时禁用开始执行", () => {
-    render(
-      <TodoPanel
-        todos={todos([
-          { id: "s1", title: "甲", status: "done" },
-          { id: "s2", title: "乙", status: "done" },
-        ])}
-        onStartBuild={() => {}}
-      />,
-    );
-    expect(screen.getByRole("button", { name: /已全部完成/ })).toBeDisabled();
-  });
-
-  it("未全部完成时可点击开始执行", async () => {
-    const onStart = vi.fn();
+  /// 模式只能由用户手动切换，面板不得提供任何自动流转入口。
+  ///
+  /// 自动切模式会剥夺用户表达意图的机会——想补充信息、想重新规划时
+  /// 都没有正常路径。
+  it("不提供任何自动流转入口", () => {
     render(
       <TodoPanel
         todos={todos([
           { id: "s1", title: "甲", status: "done" },
           { id: "s2", title: "乙" },
         ])}
-        onStartBuild={onStart}
       />,
     );
-    const btn = screen.getByRole("button", { name: /开始执行/ });
-    expect(btn).toBeEnabled();
-    await userEvent.click(btn);
-    expect(onStart).toHaveBeenCalled();
-  });
-
-  it("busy 时禁用开始执行", () => {
-    render(
-      <TodoPanel
-        todos={todos([{ id: "s1", title: "甲" }])}
-        onStartBuild={() => {}}
-        busy
-      />,
-    );
-    expect(screen.getByRole("button", { name: /开始执行/ })).toBeDisabled();
+    expect(screen.queryByRole("button", { name: /开始执行/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /已全部完成/ })).toBeNull();
+    expect(screen.queryByText(/切换到执行/)).toBeNull();
   });
 
   it("折叠后隐藏步骤列表但保留标题", async () => {

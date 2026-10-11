@@ -40,8 +40,6 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
     cancelRename,
     renameSession,
     mode,
-    busy,
-    startBuild,
     deleteTodoStep,
     addTodoStep,
     setTodoStatus,
@@ -201,11 +199,9 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
       {showPanel && (
         <TodoPanel
           todos={activeTodos}
-          onStartBuild={mode === "plan" ? startBuild : undefined}
           onDeleteStep={deleteTodoStep}
           onToggleStep={setTodoStatus}
           onAddStep={addTodoStep}
-          busy={busy}
         />
       )}
 
