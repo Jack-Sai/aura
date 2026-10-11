@@ -37,6 +37,18 @@ const MAX_TOOL_ROUNDS: usize = 100;
 const MAX_PARSE_RETRIES: u32 = 3;
 const MAX_PARSE_RETRIES_SMALL: u32 = 1;
 
+/// 流空闲上限：连续多久收不到任何数据就判定上游失联。
+///
+/// 之前 `select!` 只有「拿到数据」与「用户手动中断」两条出路，
+/// 而 SSE 在无数据时永久 `Pending`（见 `sse.rs`）。只要连接建好后模型
+/// 停顿一下，`stream.next()` 就永不返回，界面零输出地挂住，
+/// 只能靠用户手动中断——这是 v0.4.4 修复的核心问题。
+///
+/// 90 秒的取值依据：本地 7B 级模型单次推理偶尔可达 30~60 秒，
+/// 再叠加首 token 延迟，90 秒仍属异常；真正的死连接通常在
+/// TCP 层很快就会断开，不会占用这么久。
+const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
+
 /// 连续调用节流键：工具名 + 作用目标。
 ///
 /// 仅按工具名计数会误伤合法的批量修改——例如连续 10 次改同一个文件，
@@ -51,6 +63,38 @@ fn throttle_key(name: &str, args: &Value) -> String {
         .map(str::to_string)
         .unwrap_or_else(|| "*".to_string());
     format!("{}|{}", name, target)
+}
+
+/// 工具拒绝计数：按工具名独立统计。
+///
+/// 此前只用一个全局 `parse_failures`，且每次工具成功放行就清零。
+/// 于是模型陷入「write_file 被拒 → read_file 成功 → write_file 被拒」
+/// 的交替时，计数永远到不了阈值，唯一刹车变成 `MAX_TOOL_ROUNDS=100`
+/// ——本地模型每轮数秒，单轮可能跑几分钟，用户只看到界面一直不响应。
+///
+/// 改为按工具名分别计数：同一个被拒工具累计到上限即终止，
+/// 而「换个工具试试」不会被误伤。
+#[derive(Default)]
+struct RejectCounter {
+    counts: std::collections::HashMap<String, u32>,
+}
+
+impl RejectCounter {
+    /// 记录一次拒绝，返回是否已超过阈值。
+    fn record(&mut self, tool: &str, limit: u32) -> bool {
+        let c = self.counts.entry(tool.to_string()).or_insert(0);
+        *c += 1;
+        *c > limit
+    }
+
+    fn total(&self) -> u32 {
+        self.counts.values().sum()
+    }
+
+    /// 清零某个工具的计数（该工具被成功执行后调用）。
+    fn reset(&mut self, tool: &str) {
+        self.counts.remove(tool);
+    }
 }
 
 pub struct TurnContext<'a> {
@@ -104,6 +148,76 @@ fn emit_done(app: &AppHandle, session_id: &str) {
     let _ = app.emit(EV_DONE, json!({ "session_id": session_id }));
 }
 
+/// 把本轮已产生的内容补发给前端。
+///
+/// 中断路径下 `Event::Tool` 的 `break 'stream` 会让后续正文全部滞留
+/// 在 `turn_output` 里——它进了 history（模型看得见）却从未 emit
+/// （用户看不见）。结果是提示写着「已将当前输出作为回答」，而用户
+/// 实际什么都没收到。这里剥掉协议标签后补发一次，让承诺兑现。
+fn emit_pending_text(app: &AppHandle, session_id: &str, turn_output: &str) {
+    let text = strip_protocol_tags(turn_output);
+    if !text.trim().is_empty() {
+        emit_text(app, session_id, EV_CHUNK, &text);
+    }
+}
+
+/// 从一轮原始输出中提取可读正文，剔除协议标签与工具调用体。
+///
+/// `<tool>...</tool>` 是机器协议，逐字展示给用户毫无意义；
+/// `<todo_plan>` / `<todo_update>` 已由侧边栏清单呈现，重复展示反而杂乱。
+fn strip_protocol_tags(raw: &str) -> String {
+    let mut out = String::with_capacity(raw.len());
+    let mut rest = raw;
+    while let Some(start) = rest.find('<') {
+        out.push_str(&rest[..start]);
+        let tail = &rest[start..];
+        let Some(end) = tail.find('>') else {
+            // 未闭合的标签直接丢弃其后内容，避免把半截 JSON 当正文展示
+            break;
+        };
+        let tag = &tail[..=end];
+        let is_open = tag.starts_with("<tool")
+            || tag.starts_with("<todo_plan")
+            || tag.starts_with("<todo_update");
+        // 闭合标签是机器协议的结尾，展示出来同样没有意义
+        let is_close = tag.starts_with("</tool")
+            || tag.starts_with("</todo_plan")
+            || tag.starts_with("</todo_update")
+            || tag.starts_with("</answer");
+        if is_open {
+            // 连同闭合标签与其中内容一起跳过
+            let after = &tail[end + 1..];
+            let closer = if tag.starts_with("<tool") {
+                "</tool>"
+            } else if tag.starts_with("<todo_plan") {
+                "</todo_plan>"
+            } else {
+                "</todo_update>"
+            };
+            match after.find(closer) {
+                Some(c) => {
+                    out.push('\n');
+                    rest = &after[c + closer.len()..];
+                }
+                None => {
+                    rest = "";
+                    break;
+                }
+            }
+        } else if is_close {
+            out.push('\n');
+            rest = &tail[end + 1..];
+        } else {
+            out.push_str(tag);
+            rest = &tail[end + 1..];
+        }
+    }
+    if !rest.is_empty() {
+        out.push_str(rest);
+    }
+    out
+}
+
 fn emit_cancelled(app: &AppHandle, session_id: &str) {
     emit_text(app, session_id, EV_NOTICE, "已停止生成");
     emit_done(app, session_id);
@@ -154,6 +268,15 @@ fn parse_tool_call(raw: &str) -> Result<(String, Value), String> {
 
 fn is_known_tool(name: &str) -> bool {
     crate::tools::is_known(&normalize_tool_name(name))
+}
+
+/// 从被拒的原文里取出工具名，用于按工具分别计数。
+///
+/// 拒绝发生在 `parse_tool_call` 之后，因此原文里必然有一份可解析的
+/// 工具调用；解析不出来时返回 `None`，由调用方归入「unknown」桶。
+fn rejected_tool_name(turn_output: &str) -> Option<String> {
+    let raw = turn_output.rsplit_once("<tool>")?.1.split_once("</tool>")?.0;
+    parse_tool_call(raw).ok().map(|(name, _)| normalize_tool_name(&name))
 }
 
 /// 处理模型产出的 `<todo_plan>`：解析、落库、推送前端。
@@ -289,6 +412,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
     ctx.history
         .push(json!({ "role": "user", "content": user_message }));
     let mut parse_failures: u32 = 0;
+        let mut rejects = RejectCounter::default();
     let mut consecutive: Option<(String, usize)> = None;
     let mut rounds = 0usize;
 
@@ -409,10 +533,16 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
 
         let mut stream = fb.value;
         let mut was_cancelled = false;
+        let mut idle_timed_out = false;
         'stream: loop {
             let cancel = ctx.cancelled;
             let item = tokio::select! {
                 i = stream.next() => i,
+                // 空闲超时：每收到一块数据就重置，因此只在真正失联时触发
+                _ = tokio::time::sleep(STREAM_IDLE_TIMEOUT) => {
+                    idle_timed_out = true;
+                    break 'stream;
+                }
                 _ = async {
                     while !cancel.load(Ordering::Relaxed) {
                         tokio::time::sleep(Duration::from_millis(50)).await;
@@ -481,6 +611,21 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             push_assistant(ctx.history, &turn_output);
             emit_text(ctx.app, ctx.session_id, EV_ERROR, &format!("连接中断：{}", msg));
             return Err(msg);
+        }
+
+        // 上游长时间无响应。已收到的片段补发给用户——否则界面停在
+        // 「什么都没发生」，而模型其实已经写了一半
+        if idle_timed_out {
+            push_assistant(ctx.history, &turn_output);
+            emit_pending_text(ctx.app, ctx.session_id, &turn_output);
+            emit_text(
+                ctx.app,
+                ctx.session_id,
+                EV_ERROR,
+                &format!("模型 {} 秒无响应，已中断本轮生成。", STREAM_IDLE_TIMEOUT.as_secs()),
+            );
+            emit_done(ctx.app, ctx.session_id);
+            return Ok(());
         }
 
         if answered {
@@ -594,30 +739,39 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 push_assistant(ctx.history, &turn_output);
                 // 工具压根没执行成功，不应计入连续调用节流
                 consecutive = None;
+                // 提权为 error 事件：此前是灰色 notice，视觉权重极低，
+                // 用户容易把「工具被拒」误读成「界面卡住没反应」
                 emit_text(
                     ctx.app,
                     ctx.session_id,
-                    EV_NOTICE,
+                    EV_ERROR,
                     &format!(
                         "工具调用无效：{}；原文：{}",
                         msg,
                         truncate_tail(&turn_output, 200)
                     ),
                 );
-                parse_failures += 1;
-                if parse_failures > max_parse_retries {
-                    if !turn_output.is_empty() {
-                        emit_text(
-                            ctx.app,
-                            ctx.session_id,
-                            EV_NOTICE,
-                            "多次工具调用无效，已将当前输出作为回答",
-                        );
-                        emit_done(ctx.app, ctx.session_id);
-                        return Ok(());
-                    }
-                    emit_text(ctx.app, ctx.session_id, EV_ERROR, "模型解析失败，请重试。");
-                    return Err("model output parse failed".into());
+                // 按工具名独立计数：交替调用不同工具时无法收敛，
+                // 靠全局计数 + 成功即清零会一直跑到 MAX_TOOL_ROUNDS
+                let rejected = rejected_tool_name(&turn_output)
+                    .unwrap_or_else(|| "unknown".to_string());
+                let exceeded = rejects.record(&rejected, max_parse_retries);
+                // 另一个兜底：全部拒绝次数也超限时终止，防止模型
+                // 轮换大量工具名无限重试
+                let total_exceeded = rejects.total() > max_parse_retries * 4;
+                if exceeded || total_exceeded {
+                    emit_pending_text(ctx.app, ctx.session_id, &turn_output);
+                    emit_text(
+                        ctx.app,
+                        ctx.session_id,
+                        EV_ERROR,
+                        &format!(
+                            "`{rejected}` 连续被拒多次，已停止重试。可以换个说法，\
+                             或切换到执行模式后再试。"
+                        ),
+                    );
+                    emit_done(ctx.app, ctx.session_id);
+                    return Ok(());
                 }
                 ctx.history.push(json!({
                     "role": "user",
@@ -627,7 +781,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             }
             Next::Tool(name, args) => {
                 push_assistant(ctx.history, &turn_output);
-                parse_failures = 0;
+                // 该工具已成功放行，清掉它的拒绝计数，
+                // 让「换个工具再试」不会继承旧账
+                rejects.reset(&name);
 
                 let tool_label = tools::tool_label(&name, &args);
                 // 节流按「工具 + 目标」计数，并使用注册表声明的上限
@@ -737,6 +893,98 @@ mod tests {
             parse_tool_call(r#"{"name": "read_file", "args": {"path": "a.md"}}"#).unwrap();
         assert_eq!(name, "read_file");
         assert_eq!(args["path"], "a.md");
+    }
+
+    // ---- 拒绝计数：按工具名独立统计 ----
+
+    #[test]
+    fn reject_counter_isolates_tools() {
+        let mut c = RejectCounter::default();
+        // write_file 被拒两次、read_file 一次
+        assert!(!c.record("write_file", 2));
+        assert!(!c.record("write_file", 2));
+        assert!(!c.record("read_file", 2));
+        // write_file 第三次超限，但不应连带把 read_file 也算进来
+        assert!(c.record("write_file", 2));
+        assert_eq!(c.counts.get("read_file"), Some(&1));
+    }
+
+    /// 这是本次修复的核心：模型交替调用被拒工具与可成功工具时，
+    /// 旧的「全局计数 + 成功即清零」永远不会收敛，能一直跑到
+    /// MAX_TOOL_ROUNDS=100。现在按工具名独立计数可以收敛。
+    #[test]
+    fn reject_counter_terminates_despite_alternating_successes() {
+        let mut c = RejectCounter::default();
+        let limit = 3;
+        let mut rounds = 0;
+        loop {
+            rounds += 1;
+            // read_file 成功 → 只清它自己的计数
+            c.reset("read_file");
+            if c.record("write_file", limit) {
+                break;
+            }
+            assert!(rounds < 20, "交替调用下计数必须收敛，否则会跑满 MAX_TOOL_ROUNDS");
+        }
+        assert!(rounds <= limit + 1);
+    }
+
+    #[test]
+    fn reject_counter_total_bounds_tool_rotation() {
+        // 模型轮换大量工具名重试时，总次数兜底必须生效
+        let mut c = RejectCounter::default();
+        for i in 0..20 {
+            c.record(&format!("tool_{i}"), 100);
+        }
+        assert!(c.total() > 12, "总计数应能识别轮换工具名的重试");
+    }
+
+    #[test]
+    fn rejected_tool_name_extracts_from_turn_output() {
+        let out = "先看看文件。\n<tool>{\"name\":\"Write-File\",\"args\":{}}</tool>";
+        assert_eq!(rejected_tool_name(out).as_deref(), Some("write_file"));
+        // 没有工具调用时归入 unknown 桶
+        assert_eq!(rejected_tool_name("只是文本"), None);
+    }
+
+    // ---- 中断收尾：补发已生成正文 ----
+
+    #[test]
+    fn strip_protocol_tags_removes_tool_bodies() {
+        let raw = "开始处理。\n<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"a.md\"}}</tool>\n读取完成。";
+        let text = strip_protocol_tags(raw);
+        assert!(text.contains("开始处理。"));
+        assert!(text.contains("读取完成。"));
+        assert!(
+            !text.contains("read_file"),
+            "工具调用体是机器协议，不应展示给用户"
+        );
+    }
+
+    #[test]
+    fn strip_protocol_tags_removes_todo_blocks() {
+        // 清单已在侧边栏呈现，正文里重复展示只会杂乱
+        let raw = "以下是计划：\n<todo_plan>{\"todos\":[{\"id\":\"s1\"}]}</todo_plan>\n请确认。";
+        let text = strip_protocol_tags(raw);
+        assert!(text.contains("以下是计划："));
+        assert!(text.contains("请确认。"));
+        assert!(!text.contains("todos"));
+    }
+
+    #[test]
+    fn strip_protocol_tags_drops_unclosed_tag() {
+        // 断流时标签可能未闭合，绝不能把半截 JSON 当正文展示
+        let raw = "正常文字\n<tool>{\"name\":\"read_fi";
+        let text = strip_protocol_tags(raw);
+        assert!(text.contains("正常文字"));
+        assert!(!text.contains("read_fi"));
+    }
+
+    #[test]
+    fn strip_protocol_tags_keeps_plain_text_and_closing_tags() {
+        assert_eq!(strip_protocol_tags("纯文本"), "纯文本");
+        // 闭合标签是机器协议的结尾，同样不该展示
+        assert!(!strip_protocol_tags("正文</answer>后续").contains("answer"));
     }
 
     // ---- 端到端：模型原始输出 → 解析器 → 载荷 → 清单状态 ----
