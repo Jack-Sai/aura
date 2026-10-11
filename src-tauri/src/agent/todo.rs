@@ -302,6 +302,24 @@ mod tests {
         assert_eq!(todos.len(), 2);
     }
 
+    /// Build 模式的典型推进：pending → in_progress → done，
+    /// 状态要能被反复覆盖，且只影响目标步骤。
+    #[test]
+    fn apply_update_transitions_through_full_lifecycle() {
+        let mut todos = plan(r#"[{"id":"s1","title":"甲"},{"id":"s2","title":"乙"}]"#);
+        assert!(apply_update(&mut todos, "s1", TodoStatus::InProgress));
+        assert_eq!(todos[0].status, TodoStatus::InProgress);
+        assert_eq!(todos[1].status, TodoStatus::Pending, "不应影响其它步骤");
+
+        assert!(apply_update(&mut todos, "s1", TodoStatus::Done));
+        assert_eq!(todos[0].status, TodoStatus::Done);
+
+        // 已完成的步骤允许被回退（例如发现验证失败需要重做）
+        assert!(apply_update(&mut todos, "s1", TodoStatus::InProgress));
+        assert_eq!(todos[0].status, TodoStatus::InProgress);
+        assert_eq!(done_count(&todos), 0);
+    }
+
     #[test]
     fn sanitize_shares_rules_with_model_output() {
         let input = vec![

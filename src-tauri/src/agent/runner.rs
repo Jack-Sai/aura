@@ -14,7 +14,7 @@ use super::mode::Mode;
 use super::parser::{Event, Finish, Parser};
 use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
 use super::todo;
-use super::Todo;
+use super::{Todo, TodoStatus};
 
 pub const EV_CHUNK: &str = "agent:chunk";
 pub const EV_ACTION: &str = "agent:action";
@@ -23,6 +23,8 @@ pub const EV_ERROR: &str = "agent:error";
 pub const EV_DONE: &str = "agent:done";
 /// 规划模式产出的任务清单。载荷为清洗后的 Todo 数组。
 pub const EV_TODO_PLAN: &str = "agent:todo_plan";
+/// 单个步骤的状态推进。载荷为 `{id, status}`。
+pub const EV_TODO_UPDATE: &str = "agent:todo_update";
 
 /// 单轮对话允许的最大工具轮次。
 ///
@@ -60,6 +62,11 @@ pub struct TurnContext<'a> {
     pub cancelled: &'a AtomicBool,
     /// 本轮会话模式，决定可用工具与 prompt 形态。默认 Chat 以兼容既有调用方。
     pub mode: Mode,
+    /// 当前任务清单的运行时副本。
+    ///
+    /// 用 `&mut` 是关键：runner 每轮工具调用后都会重建 system prompt，
+    /// 清单在此原地更新后，下一轮自动带上最新进度，无需额外同步机制。
+    pub todos: &'a mut Vec<Todo>,
     /// 落盘任务清单的回调。
     ///
     /// runner 不持有数据库连接，由 `commands.rs` 注入闭包，
@@ -182,6 +189,42 @@ fn handle_plan(ctx: &TurnContext<'_>, raw: &str) {
     );
 }
 
+/// 处理模型产出的 `<todo_update>`：应用状态变更、落库、推送前端。
+///
+/// 与计划解析不同，这里**静默失败**：清单是辅助信息，模型偶尔漏更新
+/// 或引用了已删除的步骤都不该打断对话。用户看到的清单不更新，
+/// 总好过对话中断。
+fn handle_todo_update(ctx: &mut TurnContext<'_>, raw: &str) {
+    let value: Value = match serde_json::from_str(raw.trim()) {
+        Ok(v) => v,
+        Err(_) => return,
+    };
+    let Some(id) = value.get("id").and_then(|v| v.as_str()).map(str::trim) else {
+        return;
+    };
+    if id.is_empty() {
+        return;
+    }
+    let status = value
+        .get("status")
+        .and_then(|v| v.as_str())
+        .map(TodoStatus::parse)
+        .unwrap_or_default();
+
+    // 直接改 ctx.todos：它是 &mut 引用，后续每轮重建 prompt 时
+    // 都会自动带上最新进度，无需额外的同步机制
+    if !todo::apply_update(ctx.todos, id, status) {
+        return;
+    }
+    if let Some(app) = ctx.persist_todos {
+        app(ctx.todos.to_vec());
+    }
+    let _ = ctx.app.emit(
+        EV_TODO_UPDATE,
+        json!({ "session_id": ctx.session_id, "id": id, "status": status.as_str() }),
+    );
+}
+
 fn write_diag_log(info: &str) {
     let path = std::env::temp_dir().join("aura-diag.log");
     let now = std::time::SystemTime::now()
@@ -243,6 +286,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             build_compact_system_prompt(&ws_display, ctx.global_rules)
         } else {
             build_system_prompt(&ws_display, ctx.global_rules, ctx.mode)
+        };
+        // 清单在每轮重建时注入：模型刚更新完的进度会在下一次工具调用时
+        // 立即反映到 prompt，无需额外的同步或缓存
+        let system = if ctx.todos.is_empty() {
+            system
+        } else {
+            format!("{}{}", system, todo::render_for_prompt(ctx.todos))
         };
         let system_tokens = estimate_tokens(&system) + 4;
         if needs_compression(ctx.history, limit, system_tokens) {
@@ -350,6 +400,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                                 // 计划之后模型还要输出 <answer> 做说明，
                                 // 打断流会导致那段正文整个丢失。
                             }
+                            Event::TodoUpdate(json_str) => {
+                                turn_output
+                                    .push_str(&format!("<todo_update>{}</todo_update>", json_str));
+                                handle_todo_update(ctx, &json_str);
+                                // 同样不能 break 'stream：Build 模式的正常形态是
+                                // 「更新一步 → 调工具 → 更新一步」，打断即丢失后续内容
+                            }
                         }
                     }
                 }
@@ -401,6 +458,11 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                             .push_str(&format!("<todo_plan>{}</todo_plan>", json_str));
                         handle_plan(ctx, &json_str);
                     }
+                    Event::TodoUpdate(json_str) => {
+                        turn_output
+                            .push_str(&format!("<todo_update>{}</todo_update>", json_str));
+                        handle_todo_update(ctx, &json_str);
+                    }
                 }
             }
             if answered {
@@ -446,6 +508,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     Finish::UnclosedTool => "JSON parse failed - tool tag is not closed",
                     Finish::UnclosedPlan => {
                         "todo_plan tag is not closed - 请输出完整的 <todo_plan>...</todo_plan>"
+                    }
+                    Finish::UnclosedTodo => {
+                        "todo_update tag is not closed - 请输出完整的 <todo_update>...</todo_update>"
                     }
                     _ => "输出未包含合法的 <tool> 或 <answer> 标签，请严格按照协议输出",
                 };

@@ -6,11 +6,14 @@ const TAGS: &[&str] = &[
     "</answer>",
     "<todo_plan>",
     "</todo_plan>",
+    "<todo_update>",
+    "</todo_update>",
 ];
 
 const CLOSE_TOOL: &str = "</tool>";
 const CLOSE_ANSWER: &str = "</answer>";
 const CLOSE_PLAN: &str = "</todo_plan>";
+const CLOSE_UPDATE: &str = "</todo_update>";
 
 pub enum Event {
     Chunk(String),
@@ -22,6 +25,10 @@ pub enum Event {
     /// 计划写完之后模型还要继续输出 `<answer>` 做说明，
     /// 若在此 break 'stream，后续正文会整个丢失。
     TodoPlan(String),
+    /// `<todo_update>` 的 JSON 载荷，形如 `{"id":"s1","status":"done"}`。
+    /// 同样是伴随式事件，且会出现在流式输出的**任意位置**——
+    /// 执行模式的正常形态就是「更新一步 → 调工具 → 更新一步 → 调工具」。
+    TodoUpdate(String),
 }
 
 pub enum Finish {
@@ -29,6 +36,7 @@ pub enum Finish {
     MissingTag,
     UnclosedTool,
     UnclosedPlan,
+    UnclosedTodo,
 }
 
 enum State {
@@ -37,6 +45,7 @@ enum State {
     Tool,
     Answer,
     Plan,
+    Update,
 }
 
 enum Probe {
@@ -71,6 +80,7 @@ pub struct Parser {
     tool_buf: String,
     ans_buf: String,
     plan_buf: String,
+    upd_buf: String,
 }
 
 impl Parser {
@@ -80,6 +90,7 @@ impl Parser {
             tool_buf: String::new(),
             ans_buf: String::new(),
             plan_buf: String::new(),
+            upd_buf: String::new(),
         }
     }
 
@@ -122,6 +133,10 @@ impl Parser {
                                     self.plan_buf.clear();
                                     self.state = State::Plan;
                                 }
+                                "<todo_update>" => {
+                                    self.upd_buf.clear();
+                                    self.state = State::Update;
+                                }
                                 // 其余为关闭标签：落到这里说明是空闭合
                                 // （如 `</answer>`），按原文继续流式输出
                                 _ => self.state = State::Raw,
@@ -160,6 +175,21 @@ State::Plan => {
                         }
                         self.state = State::Raw;
                         rest = std::mem::take(&mut self.plan_buf);
+                    }
+                }
+State::Update => {
+                    // 体量极小（一个 step_id + status），照 Plan/Plan 的做法整块吞下
+                    self.upd_buf.push_str(&rest);
+                    rest.clear();
+                    if let Some(pos) = self.upd_buf.find(CLOSE_UPDATE) {
+                        let json: String = self.upd_buf.drain(..pos).collect();
+                        self.upd_buf.drain(..CLOSE_UPDATE.len());
+                        let trimmed = json.trim().to_string();
+                        if !trimmed.is_empty() {
+                            out.push(Event::TodoUpdate(trimmed));
+                        }
+                        self.state = State::Raw;
+                        rest = std::mem::take(&mut self.upd_buf);
                     }
                 }
                 State::Answer => {
@@ -215,6 +245,14 @@ State::Plan => {
                     out.push(Event::TodoPlan(trimmed));
                 }
                 Finish::UnclosedPlan
+            }
+            State::Update => {
+                let buf = std::mem::take(&mut self.upd_buf);
+                let trimmed = buf.trim().to_string();
+                if !trimmed.is_empty() {
+                    out.push(Event::TodoUpdate(trimmed));
+                }
+                Finish::UnclosedTodo
             }
             State::Probe(buf) => {
                 out.push(Event::Chunk(buf));
@@ -362,6 +400,84 @@ mod tests {
         ]);
         assert!(events.iter().any(|e| matches!(e, Event::TodoPlan(_))));
         assert!(matches!(&events[1], Event::Tool(t) if t.contains("list_files")));
+    }
+
+    #[test]
+    fn todo_update_tag_emits_and_keeps_streaming() {
+        // Build 模式的正常形态：更新一步 → 调工具 → 更新一步
+        let (events, _) = feed_all(&[
+            "<todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>",
+            "好的，开始处理。",
+            "<tool>{\"name\":\"read_file\"}</tool>",
+        ]);
+        assert!(matches!(&events[0], Event::TodoUpdate(t) if t.contains("\"s1\"")));
+        // 关键：更新之后正文仍要正常流出，不能像 <tool>/<answer> 那样打断
+        assert!(
+            events.iter().any(|e| matches!(e, Event::Chunk(t) if t.contains("好的"))),
+            "TodoUpdate 后必须继续输出正文"
+        );
+        assert!(events.iter().any(|e| matches!(e, Event::Tool(_))));
+    }
+
+    #[test]
+    fn multiple_todo_updates_in_one_stream() {
+        let (events, _) = feed_all(&[
+            "<todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>",
+            "<todo_update>{\"id\":\"s1\",\"status\":\"done\"}</todo_update>",
+            "<todo_update>{\"id\":\"s2\",\"status\":\"done\"}</todo_update>",
+        ]);
+        let updates: Vec<&Event> =
+            events.iter().filter(|e| matches!(e, Event::TodoUpdate(_))).collect();
+        assert_eq!(updates.len(), 3);
+        assert!(matches!(updates[0], Event::TodoUpdate(t) if t.contains("in_progress")));
+        assert!(matches!(updates[2], Event::TodoUpdate(t) if t.contains("\"s2\"")));
+    }
+
+    #[test]
+    fn todo_update_split_across_chunks() {
+        let (events, _) = feed_all(&["<todo_up", "date>{\"id\":\"s1\"}</todo_", "update>尾"]);
+        assert!(matches!(&events[0], Event::TodoUpdate(t) if t == "{\"id\":\"s1\"}"));
+        assert!(matches!(&events[1], Event::Chunk(t) if t == "尾"));
+    }
+
+    #[test]
+    fn todo_update_lt_in_text_is_not_a_tag() {
+        let (events, finish) = feed_all(&["x <todo_update y"]);
+        let text: String = events
+            .iter()
+            .filter_map(|e| match e {
+                Event::Chunk(t) => Some(t.as_str()),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(text, "x <todo_update y");
+        assert!(!events.iter().any(|e| matches!(e, Event::TodoUpdate(_))));
+        assert!(matches!(finish, Finish::MissingTag));
+    }
+
+    #[test]
+    fn unclosed_todo_update_yields_partial_payload() {
+        let (events, finish) = feed_all(&["<todo_update>{\"id\":\"s1\",\"stat"]);
+        assert!(matches!(&events[0], Event::TodoUpdate(t) if t.contains("s1")));
+        assert!(matches!(finish, Finish::UnclosedTodo));
+    }
+
+    #[test]
+    fn empty_todo_update_emits_nothing() {
+        let (events, _) = feed_all(&["<todo_update></todo_update>尾"]);
+        assert!(!events.iter().any(|e| matches!(e, Event::TodoUpdate(_))));
+        assert!(events.iter().any(|e| matches!(e, Event::Chunk(t) if t == "尾")));
+    }
+
+    #[test]
+    fn todo_plan_and_update_tags_do_not_confuse_each_other() {
+        // 两种标签前缀相近，最容易在 Probe 状态机里串味
+        let (events, _) = feed_all(&[
+            "<todo_plan>{\"todos\":[]}</todo_plan>",
+            "<todo_update>{\"id\":\"s1\"}</todo_update>",
+        ]);
+        assert!(matches!(&events[0], Event::TodoPlan(_)));
+        assert!(matches!(&events[1], Event::TodoUpdate(_)));
     }
 
     #[test]

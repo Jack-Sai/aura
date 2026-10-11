@@ -147,6 +147,16 @@ pub async fn send_message(
             .unwrap_or_else(|| Session::new(default_model))
     });
     let session = &mut *session;
+
+    // 清单的运行时副本。每轮开始时从库中读取，保证重开应用后
+    // Build 模式仍能接着上次的进度往下走。
+    let mut todos: Vec<Todo> = state
+        .db
+        .lock()
+        .ok()
+        .and_then(|db| db::load_todos(&db, &session_id).ok())
+        .unwrap_or_default();
+
     let result = {
         let mut ctx = TurnContext {
             app: &app,
@@ -158,9 +168,10 @@ pub async fn send_message(
             session_id: &session_id,
             cancelled: &state.cancelled,
             mode,
-            persist_todos: Some(&|todos: Vec<Todo>| {
+            todos: &mut todos,
+            persist_todos: Some(&|next: Vec<Todo>| {
                 if let Ok(db) = state.db.lock() {
-                    let _ = db::save_todos(&db, &session_id, &todos);
+                    let _ = db::save_todos(&db, &session_id, &next);
                 }
             }),
         };
