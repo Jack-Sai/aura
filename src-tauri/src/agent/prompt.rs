@@ -1,6 +1,7 @@
+use crate::agent::mode::Mode;
 use crate::tools::{registry, ToolKind};
 
-pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
+pub fn build_system_prompt(workspace: &str, global_rules: &str, mode: Mode) -> String {
     let mut p = String::new();
     p.push_str(
         "你是 Aura，一个在用户本地工作区中运行的 AI Agent。\
@@ -10,12 +11,14 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
     p.push_str(workspace);
     p.push('\n');
 
-    // 工具清单由注册表生成，新增工具无需改动此处
-    p.push_str(&registry::prompt_section(&[
-        ToolKind::Read,
-        ToolKind::Write,
-        ToolKind::Exec,
-    ]));
+    // 模式纪律段前置：让模型先知道「现在是规划还是执行」，再读工具清单
+    let discipline = mode_section(mode);
+    if !discipline.is_empty() {
+        p.push_str(&discipline);
+    }
+
+    // 工具清单由注册表生成并按模式过滤，新增工具无需改动此处
+    p.push_str(&registry::prompt_section(mode.kinds()));
 
     p.push_str(
         "\n# 输出规则\n\
@@ -27,8 +30,10 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
          禁止直接输出裸文本作为回答。\n",
     );
 
-    // 写入类工具的使用纪律：只在存在 Write 类工具时注入
-    if !registry::names_by_kind(ToolKind::Write).is_empty() {
+    // 写入类工具的使用纪律：仅在本模式确实放行 Write 工具时注入。
+    // 判据用 mode 而非「注册表里是否存在」，否则 Plan 模式的 prompt 里
+    // 会出现 write_file 等名字——与 Rust 侧闸门矛盾，徒增 Token 并误导模型。
+    if mode.allows("write_file") && !registry::names_by_kind(ToolKind::Write).is_empty() {
         p.push_str(
             "\n# 修改文件\n\
              - 改动已有文件前必须先 read_file 确认现有内容，禁止凭猜测直接覆写。\n\
@@ -42,20 +47,20 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
         );
     }
 
-    // 命令执行纪律：仅在存在 Exec 类工具时注入
-    if !registry::names_by_kind(ToolKind::Exec).is_empty() {
+    // 命令执行纪律：同样仅在本模式放行 Exec 工具时注入
+    if mode.allows("run_script") && !registry::names_by_kind(ToolKind::Exec).is_empty() {
         p.push_str(
             "\n# 执行命令\n\
              - run_script 用于验证修改结果（编译、跑测试、查看 git diff），不要用它做与当前任务无关的操作。\n\
              - 先看返回的**退出码**：非 0 表示命令失败，必须读懂输出并修复，不要在失败状态下继续往下走。\n\
              - 输出过长会被截断，只保留头尾；关键信息请改用更精确的命令重新获取。\n\
              - 命令失败后不要原样重试，先根据错误信息调整命令或修改代码。\n\
-             - 提交信息含空格、括号或中文时，用文件传参而非引号：\n\
+             - 提交信息含空格、括号或中文时，用文件传参而非引号：\
              先 write_file 写入 commit_msg.txt，再 git commit -F commit_msg.txt。\n",
         );
     }
 
-    p.push_str(&format!(
+p.push_str(&format!(
         "\n# 运行限制\n\
          - 所有路径必须使用正斜杠 /，且必须位于工作区内；禁止绝对路径、禁止 ..，越界会被直接拦截。\n\
          - 同一个工具对**同一个目标**连续调用 {} 次后会被拦截并返回报错；\
@@ -74,6 +79,36 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
     }
 
     p
+}
+
+/// 各模式的纪律段。Chat 返回空串——它是默认模式，无需任何额外约束，
+/// 这样也保证 v0.4.0 的 Chat 行为与 v0.3.x 完全一致。
+fn mode_section(mode: Mode) -> String {
+    match mode {
+        Mode::Chat => String::new(),
+        Mode::Plan => "\n# 当前模式：规划（Plan）\n\
+             - 本模式**只读**：不可修改任何文件，不可执行任何命令。工具清单里只有只读工具。\n\
+             - 你的任务是先调研清楚，再产出可执行的计划，而不是动手改。\n\
+             - 充分使用 list_files / read_file / search_workspace 了解现状后再规划，\
+             不要凭空假设文件结构或内容。\n\
+             - 计划输出格式（JSON 必须合法）：\n\
+             <todo_plan>{\"todos\":[{\"id\":\"s1\",\"title\":\"步骤标题\"}]}</todo_plan>\n\
+             - 步骤要求：3~8 条，每条只做一件事，id 用 s1、s2 递增；\
+             title 要具体到可验证（如「新增 config.rs 并注册路由」），禁止「优化代码」这类空话。\n\
+             - 输出 <todo_plan> 后，仍须用 <answer> 简要说明计划要点与关键取舍。\n\
+             - 用户确认计划后会切换到执行模式；若用户此刻就要求你动手，\
+             说明他们不需要规划，请直接在 <answer> 中照做。\n"
+            .to_string(),
+        Mode::Build => "\n# 当前模式：执行（Build）\n\
+             - 本模式允许写入文件与执行命令，按既定目标把事情做完。\n\
+             - 若上下文中已有计划（todo_plan），请逐步推进，并在**开始或完成**某一步时\
+             更新其状态：\n\
+             <todo_update>{\"id\":\"s1\",\"status\":\"in_progress\"}</todo_update>\n\
+             - status 只取 pending / in_progress / done 三值；一次最多更新一个步骤。\n\
+             - 不要跳过中间步骤直接宣布完成；每步做完应先验证（读文件或跑命令）再标记 done。\n\
+             - 全部步骤 done 后，用 <answer> 汇总实际改动与验证结果。\n"
+            .to_string(),
+    }
 }
 
 /// 精简版 System Prompt（用于小参数本地模型，减少 Token 消耗与认知负荷）。
@@ -125,7 +160,7 @@ mod tests {
 
     #[test]
     fn full_prompt_includes_write_tools_and_discipline() {
-        let p = build_system_prompt("/ws", "");
+        let p = build_system_prompt("/ws", "", Mode::Chat);
         // 写工具已注入
         assert!(p.contains("write_file"));
         assert!(p.contains("string_replace"));
@@ -145,6 +180,53 @@ mod tests {
     }
 
     #[test]
+    fn plan_prompt_contains_no_mutating_tool_names() {
+        let p = build_system_prompt("/ws", "", Mode::Plan);
+        // 只读工具在
+        assert!(p.contains("read_file"));
+        assert!(p.contains("search_workspace"));
+        // 任何会改动工作区的工具名都不能出现：Rust 闸门不放行，
+        // prompt 却报有，会直接诱导模型去调一个注定被拒的工具
+        for t in registry::names_by_kind(ToolKind::Write)
+            .into_iter()
+            .chain(registry::names_by_kind(ToolKind::Exec))
+        {
+            assert!(!p.contains(t), "规划 prompt 不应出现工具名 {t}");
+        }
+        // 相应纪律段也一并消失
+        assert!(!p.contains("# 修改文件"));
+        assert!(!p.contains("# 执行命令"));
+    }
+
+    #[test]
+    fn plan_prompt_explains_readonly_and_plan_protocol() {
+        let p = build_system_prompt("/ws", "", Mode::Plan);
+        assert!(p.contains("# 当前模式：规划"));
+        assert!(p.contains("只读"));
+        assert!(p.contains("<todo_plan>"));
+        // 必须提醒仍需 <answer> 收尾，否则解析器等不到终止标签
+        assert!(p.contains("<answer>"));
+    }
+
+    #[test]
+    fn build_prompt_explains_todo_update_protocol() {
+        let p = build_system_prompt("/ws", "", Mode::Build);
+        assert!(p.contains("# 当前模式：执行"));
+        assert!(p.contains("<todo_update>"));
+        assert!(p.contains("in_progress"));
+        assert!(p.contains("write_file"), "执行模式应放行写工具");
+    }
+
+    #[test]
+    fn chat_prompt_has_no_mode_section() {
+        // Chat 必须与 v0.3.x 完全一致，不引入任何新约束
+        let p = build_system_prompt("/ws", "", Mode::Chat);
+        assert!(!p.contains("# 当前模式"));
+        assert!(!p.contains("<todo_plan>"));
+        assert!(!p.contains("<todo_update>"));
+    }
+
+    #[test]
     fn compact_prompt_excludes_write_tools() {
         let p = build_compact_system_prompt("/ws", "");
         // 小模型只给只读工具，避免多轮写入导致解析重试耗尽
@@ -156,10 +238,12 @@ mod tests {
     }
 
     #[test]
-    fn global_rules_are_appended() {
-        let p = build_system_prompt("/ws", "始终使用中文注释");
-        assert!(p.contains("# 全局规则"));
-        assert!(p.contains("始终使用中文注释"));
+    fn global_rules_are_appended_in_every_mode() {
+        for mode in [Mode::Chat, Mode::Plan, Mode::Build] {
+            let p = build_system_prompt("/ws", "始终使用中文注释", mode);
+            assert!(p.contains("# 全局规则"), "{} 模式应带上全局规则", mode.as_str());
+            assert!(p.contains("始终使用中文注释"));
+        }
     }
 
     #[test]
@@ -185,8 +269,17 @@ mod tests {
 
     #[test]
     fn compact_prompt_shorter() {
-        let full = build_system_prompt("/ws", "");
+        let full = build_system_prompt("/ws", "", Mode::Chat);
         let compact = build_compact_system_prompt("/ws", "");
         assert!(compact.len() < full.len() / 2);
+    }
+
+    /// Plan 模式的小模型必须走完整 prompt，否则拿不到 <todo_plan> 协议。
+    #[test]
+    fn plan_prompt_is_longer_than_compact_but_has_no_write_tools() {
+        let plan = build_system_prompt("/ws", "", Mode::Plan);
+        let compact = build_compact_system_prompt("/ws", "");
+        assert!(plan.len() > compact.len());
+        assert!(!plan.contains("write_file"));
     }
 }

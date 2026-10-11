@@ -192,11 +192,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let is_small = is_small_model(&model_id);
         let max_parse_retries = if is_small { MAX_PARSE_RETRIES_SMALL } else { MAX_PARSE_RETRIES };
 
-        // 小模型使用精简 System Prompt，减少 Token 消耗
-        let system = if is_small {
+        // 小模型使用精简 System Prompt，减少 Token 消耗。
+        // 规划模式例外：小模型虽难执行多轮写入，但产出计划正是它的强项，
+        // 因此仍走完整 prompt（工具清单会按模式过滤为只读）。
+        let system = if is_small && ctx.mode != Mode::Plan {
             build_compact_system_prompt(&ws_display, ctx.global_rules)
         } else {
-            build_system_prompt(&ws_display, ctx.global_rules)
+            build_system_prompt(&ws_display, ctx.global_rules, ctx.mode)
         };
         let system_tokens = estimate_tokens(&system) + 4;
         if needs_compression(ctx.history, limit, system_tokens) {
