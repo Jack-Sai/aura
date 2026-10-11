@@ -428,7 +428,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     "Error: 连续调用次数超限，请尝试其他工具或基于现有信息直接回复。"
                         .to_string()
                 } else {
-                    match tools::execute(ctx.workspace, &name, &args) {
+                    match tools::execute(
+                        ctx.workspace.to_path_buf(),
+                        name.clone(),
+                        args.clone(),
+                    )
+                    .await
+                    {
                         Ok(out) => {
                             emit_action(ctx.app, ctx.session_id, &out.label, true);
                             out.result

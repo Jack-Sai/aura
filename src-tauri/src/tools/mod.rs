@@ -164,10 +164,26 @@ pub(crate) fn display_path(path: &str) -> String {
     }
 }
 
-pub fn execute(workspace: &Path, name: &str, args: &Value) -> Result<ToolOutput, ToolFail> {
-    let label = tool_label(name, args);
-    let result = match registry::find(name) {
-        Some(spec) => (spec.run)(workspace, args),
+/// 异步执行工具。
+///
+/// 工具本体仍是同步函数（文件 IO 不值得引入异步复杂度），但通过
+/// `spawn_blocking` 移交阻塞线程池执行：`run_script` 这类要跑子进程的
+/// 工具若直接同步调用，会阻塞 tokio worker，导致 SSE 流式输出中断、
+/// 界面假死、停止按钮失灵。
+pub async fn execute(
+    workspace: std::path::PathBuf,
+    name: String,
+    args: Value,
+) -> Result<ToolOutput, ToolFail> {
+    let label = tool_label(&name, &args);
+    let result = match registry::find(&name) {
+        Some(spec) => {
+            let run = spec.run;
+            match tokio::task::spawn_blocking(move || run(&workspace, &args)).await {
+                Ok(r) => r,
+                Err(e) => Err(format!("工具执行异常: {}", e)),
+            }
+        }
         None => Err(format!("未知工具: {}", name)),
     };
     result.map_err(|error| ToolFail { label, error })
