@@ -35,6 +35,8 @@ export interface Block {
   text: string;
   /** action 块专用：工具是否执行成功 */
   ok?: boolean;
+  /** action 块专用：可折叠的详细输出（命令 stdout/stderr、失败原因） */
+  detail?: string;
 }
 
 export type ChatMessage =
@@ -188,12 +190,20 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
     const on = async (
       name: string,
-      cb: (payload: { session_id: string; text?: string; ok?: boolean }) => void,
+      cb: (
+        payload: {
+          session_id: string;
+          text?: string;
+          ok?: boolean;
+          detail?: string;
+        },
+      ) => void,
     ) => {
       const un = await listen<{
         session_id: string;
         text?: string;
         ok?: boolean;
+        detail?: string;
       }>(name, (e) => cb(e.payload));
       if (disposed) un();
       else unsubs.push(un);
@@ -210,7 +220,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       appendBlocks(stream.sessionId, stream.messageId, (b) => [
         ...b,
         // ok 由后端给出；旧版本事件无此字段时按成功处理
-        { kind: "action", text: p.text ?? "", ok: p.ok !== false },
+        {
+          kind: "action",
+          text: p.text ?? "",
+          ok: p.ok !== false,
+          detail: p.detail || undefined,
+        },
       ]);
     });
     on("agent:notice", (p) => {

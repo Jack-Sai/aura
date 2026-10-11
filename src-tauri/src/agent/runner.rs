@@ -42,12 +42,18 @@ fn emit_text(app: &AppHandle, session_id: &str, event: &str, text: &str) {
     let _ = app.emit(event, json!({ "session_id": session_id, "text": text }));
 }
 
-/// 工具动作事件。`ok` 区分成功与失败——此前成功与失败推送的是同一条
-/// 文案，用户无法分辨哪个操作出错了。
-fn emit_action(app: &AppHandle, session_id: &str, label: &str, ok: bool) {
+/// 工具动作事件。`ok` 区分成功与失败；`detail` 携带可折叠的详细输出
+/// （如命令执行的 stdout/stderr），过长时不应直接铺满对话流。
+fn emit_action_detail(
+    app: &AppHandle,
+    session_id: &str,
+    label: &str,
+    ok: bool,
+    detail: Option<String>,
+) {
     let _ = app.emit(
         EV_ACTION,
-        json!({ "session_id": session_id, "text": label, "ok": ok }),
+        json!({ "session_id": session_id, "text": label, "ok": ok, "detail": detail }),
     );
 }
 
@@ -424,7 +430,13 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 let tool_label = tools::tool_label(&name, &args);
 
                 let body = if over_limit {
-                    emit_action(ctx.app, ctx.session_id, &format!("{}（连续调用超限）", tool_label), false);
+                    emit_action_detail(
+                        ctx.app,
+                        ctx.session_id,
+                        &format!("{}（连续调用超限）", tool_label),
+                        false,
+                        None,
+                    );
                     "Error: 连续调用次数超限，请尝试其他工具或基于现有信息直接回复。"
                         .to_string()
                 } else {
@@ -436,11 +448,30 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     .await
                     {
                         Ok(out) => {
-                            emit_action(ctx.app, ctx.session_id, &out.label, true);
+                            // Exec 类工具的结果是命令输出，交给前端折叠展示
+                            let detail = if name.starts_with("run_script") {
+                                Some(out.result.clone())
+                            } else {
+                                None
+                            };
+                            emit_action_detail(
+                                ctx.app,
+                                ctx.session_id,
+                                &out.label,
+                                true,
+                                detail,
+                            );
                             out.result
                         }
                         Err(fail) => {
-                            emit_action(ctx.app, ctx.session_id, &fail.label, false);
+                            // 失败信息始终附带，便于用户看清原因
+                            emit_action_detail(
+                                ctx.app,
+                                ctx.session_id,
+                                &fail.label,
+                                false,
+                                Some(fail.error.clone()),
+                            );
                             format!("Error: {}", fail.error)
                         }
                     }
