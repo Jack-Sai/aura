@@ -1,19 +1,19 @@
-﻿; Aura Inno Setup 安装脚本（中文引导页，需 UTF-8 with BOM）
+; Aura Inno Setup 安装脚本（中文引导页，需 UTF-8 with BOM）
 
 [Setup]
 AppId={{0012DB8B-711D-4965-8935-F7E3E10A2D81}}
 AppName=Aura
-AppVersion=0.3.3
+AppVersion=0.4.0
 AppPublisher=JackSai
 AppPublisherURL=https://github.com/Jack-Sai/aura
 AppSupportURL=https://github.com/Jack-Sai/aura/issues
-VersionInfoVersion=0.3.3
+VersionInfoVersion=0.4.0
 DefaultDirName={autopf}\Aura
 DefaultGroupName=Aura
 DisableProgramGroupPage=yes
 LicenseFile=LICENSE
 OutputDir=dist\installer
-OutputBaseFilename=Aura_0.3.3_win_x64_Setup
+OutputBaseFilename=Aura_0.4.0_win_x64_Setup
 SetupIconFile=src-tauri\icons\icon.ico
 UninstallDisplayIcon={app}\aura.exe
 UninstallDisplayName=Aura
