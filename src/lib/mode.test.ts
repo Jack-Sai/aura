@@ -29,10 +29,20 @@ describe("normalizeMode", () => {
 });
 
 describe("模式元数据完整性", () => {
-  it("每个模式都有中文名与说明", () => {
+  it("每个模式都有标签与说明", () => {
     for (const m of MODES) {
       expect(MODE_LABEL[m]).toBeTruthy();
       expect(MODE_HINT[m]).toBeTruthy();
+    }
+  });
+
+  /// 标签固定为英文：三个词更紧凑，且避免中英混排的基线错位
+  it("标签使用英文", () => {
+    expect(MODE_LABEL.chat).toBe("Chat");
+    expect(MODE_LABEL.plan).toBe("Plan");
+    expect(MODE_LABEL.build).toBe("Build");
+    for (const m of MODES) {
+      expect(MODE_LABEL[m]).toMatch(/^[A-Za-z]+$/);
     }
   });
 });

@@ -17,18 +17,18 @@ const todos = (raw: Array<Partial<Todo>>): Todo[] =>
 describe("ModeTabs", () => {
   it("渲染三个模式", () => {
     render(<ModeTabs mode="chat" onChange={() => {}} />);
-    expect(screen.getByRole("tab", { name: "对话" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "规划" })).toBeInTheDocument();
-    expect(screen.getByRole("tab", { name: "执行" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Chat" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Plan" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "Build" })).toBeInTheDocument();
   });
 
   it("当前模式标记为选中", () => {
     render(<ModeTabs mode="plan" onChange={() => {}} />);
-    expect(screen.getByRole("tab", { name: "规划" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Plan" })).toHaveAttribute(
       "aria-selected",
       "true",
     );
-    expect(screen.getByRole("tab", { name: "对话" })).toHaveAttribute(
+    expect(screen.getByRole("tab", { name: "Chat" })).toHaveAttribute(
       "aria-selected",
       "false",
     );
@@ -37,14 +37,14 @@ describe("ModeTabs", () => {
   it("点击切换模式", async () => {
     const onChange = vi.fn();
     render(<ModeTabs mode="chat" onChange={onChange} />);
-    await userEvent.click(screen.getByRole("tab", { name: "执行" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Build" }));
     expect(onChange).toHaveBeenCalledWith("build");
   });
 
   it("禁用时不响应点击", async () => {
     const onChange = vi.fn();
     render(<ModeTabs mode="chat" onChange={onChange} disabled />);
-    await userEvent.click(screen.getByRole("tab", { name: "规划" }));
+    await userEvent.click(screen.getByRole("tab", { name: "Plan" }));
     expect(onChange).not.toHaveBeenCalled();
   });
 });

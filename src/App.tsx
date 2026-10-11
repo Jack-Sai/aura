@@ -2,6 +2,7 @@ import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 
 import ContextMenu, { type MenuState } from "./components/ContextMenu";
 import InputArea from "./components/InputArea";
 import MessageList from "./components/MessageList";
+import RightPanel from "./components/RightPanel";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import { useTheme, type Theme } from "./hooks/useTheme";
@@ -139,6 +140,8 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
             </>
           )}
         </main>
+
+        {view === "chat" && <RightPanel />}
       </div>
 
       <ContextMenu state={menu} onClose={() => setMenu(null)} />

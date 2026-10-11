@@ -54,7 +54,10 @@ export default function InputArea({
 
   return (
     <div className="px-6 pb-5 pt-3">
-      <div className="mx-auto flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-end gap-2 rounded-card border border-line bg-surface px-4 py-3 shadow-xs transition-colors focus-within:border-brand focus-within:shadow-sm">
+      {/* items-center 而非 items-end：发送按钮比单行输入框高，
+          底部对齐会让输入框顶部留出空隙、文字整体偏下（用户反馈的问题）。
+          多行时按钮停在垂直中间也更符合直觉。 */}
+      <div className="mx-auto flex w-full max-w-4xl xl:max-w-5xl 2xl:max-w-6xl items-center gap-2 rounded-card border border-line bg-surface px-4 py-3 shadow-xs transition-colors focus-within:border-brand focus-within:shadow-sm">
         <textarea
           ref={textareaRef}
           rows={1}
@@ -68,7 +71,7 @@ export default function InputArea({
                 ? "描述要执行的任务…"
                 : "输入消息…"
           }
-          className="max-h-[33vh] min-h-[24px] flex-1 resize-none bg-transparent text-[15px] leading-relaxed outline-none placeholder:text-subtle"
+          className="max-h-[33vh] min-h-6 flex-1 resize-none overflow-y-auto bg-transparent py-0 text-[15px] leading-6 outline-none placeholder:text-subtle"
         />
         {busy ? (
           <button

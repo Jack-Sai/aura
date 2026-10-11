@@ -11,11 +11,14 @@ export type Mode = "chat" | "plan" | "build";
 
 export const MODES: Mode[] = ["chat", "plan", "build"];
 
-/** 模式的中文名，用于输入框胶囊 Tab。 */
+/**
+ * 模式标签。固定用英文：三个词足够短，UI 上更紧凑，
+ * 也避免中英混排导致的基线错位。
+ */
 export const MODE_LABEL: Record<Mode, string> = {
-  chat: "对话",
-  plan: "规划",
-  build: "执行",
+  chat: "Chat",
+  plan: "Plan",
+  build: "Build",
 };
 
 /**

@@ -2,15 +2,12 @@
 import {
   ChevronRight,
   PanelLeftClose,
-  PanelLeftOpen,
   Plus,
   Settings,
   Trash2,
 } from "lucide-react";
 import { useEffect, useState } from "react";
 import { useStore } from "../store";
-import { showsTodoPanel } from "../lib/mode";
-import TodoPanel from "./TodoPanel";
 
 const COLLAPSE_KEY = "aura-sidebar-collapsed";
 
@@ -39,21 +36,12 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
     renamingId,
     cancelRename,
     renameSession,
-    mode,
-    deleteTodoStep,
-    addTodoStep,
-    setTodoStatus,
-  } = useStore();
+    } = useStore();
 
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [collapsed, setCollapsed] = useState(
     () => localStorage.getItem(COLLAPSE_KEY) === "1",
   );
-
-  const activeSession = sessions.find((s) => s.id === activeId);
-  const activeTodos = activeSession?.todos ?? [];
-  // Chat 是自由对话，不展示清单面板以免干扰
-  const showPanel = showsTodoPanel(mode, activeTodos.length);
 
   function toggleCollapsed() {
     setCollapsed((v) => {
@@ -91,24 +79,16 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
   if (collapsed) {
     return (
       <aside className="flex w-14 shrink-0 flex-col border-r border-line">
+        {/* 折叠态下 logo 即展开入口。此前下方还有一个独立的展开按钮，
+            与 logo 功能完全重复，用户反馈两个入口让人困惑。 */}
         <button
           type="button"
           onClick={toggleCollapsed}
           aria-label="展开侧边栏"
           title="展开侧边栏"
-          className="mx-auto mt-3 mb-1 rounded-tag p-1.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
+          className="mx-auto mt-3 mb-3 rounded-tag p-1.5 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
         >
           <img src="/logo.png" alt="Aura" draggable={false} className="h-5 w-5" />
-        </button>
-
-        <button
-          type="button"
-          onClick={toggleCollapsed}
-          aria-label="展开侧边栏"
-          title="展开侧边栏"
-          className="mx-auto mb-2 rounded-tag p-1 text-subtle transition-colors hover:bg-bubble hover:text-foreground"
-        >
-          <PanelLeftOpen size={14} />
         </button>
 
         <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-2 py-1">
@@ -195,15 +175,6 @@ export default function Sidebar({ onOpenSettings, onNavigate, settingsActive }: 
           <Plus size={14} />
         </button>
       </div>
-
-      {showPanel && (
-        <TodoPanel
-          todos={activeTodos}
-          onDeleteStep={deleteTodoStep}
-          onToggleStep={setTodoStatus}
-          onAddStep={addTodoStep}
-        />
-      )}
 
       <div className="scrollbar-hidden min-h-0 flex-1 overflow-y-auto px-3 pb-4">
         {workspaces.map((w) => {
