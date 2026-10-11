@@ -1,6 +1,7 @@
 pub mod fs_ops;
 pub mod registry;
 pub mod search;
+pub mod write_ops;
 
 use std::path::{Path, PathBuf};
 
@@ -8,11 +9,13 @@ use serde_json::Value;
 
 pub use registry::{is_known, ToolKind};
 
+#[derive(Debug)]
 pub struct ToolOutput {
     pub label: String,
     pub result: String,
 }
 
+#[derive(Debug)]
 pub struct ToolFail {
     pub label: String,
     pub error: String,

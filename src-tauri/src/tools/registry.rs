@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{display_path, fs_ops, search, ToolOutput};
+use super::{display_path, fs_ops, search, write_ops, ToolOutput};
 
 /// 工具能力分类。决定该工具是否注入 prompt，以及未来的模式隔离
 /// （v0.4.x 的 Plan 模式只暴露 `Read`）。
@@ -74,6 +74,36 @@ pub const TOOLS: &[ToolSpec] = &[
         run: search::search_workspace,
         label: label_search,
         max_consecutive: READ_LIMIT,
+    },
+    ToolSpec {
+        name: "write_file",
+        kind: ToolKind::Write,
+        desc: "创建新文件或**全量覆写**整个文件；父目录不存在会自动创建。\n\
+               仅在「新建文件」或「整体重写」时使用，小范围改动请用 string_replace。",
+        example: "{\"path\": \"src/main.rs\", \"content\": \"完整文件内容\"}",
+        run: write_ops::write_file,
+        label: label_write,
+        max_consecutive: WRITE_LIMIT,
+    },
+    ToolSpec {
+        name: "string_replace",
+        kind: ToolKind::Write,
+        desc: "把文件中一处**精确匹配**的字符串替换为新字符串，最省 Token 的改法。\n\
+               old_string 必须唯一命中；出现多次时补充上下文，或加 \"replace_all\": true 全量替换。",
+        example: "{\"path\": \"src/main.rs\", \"old_string\": \"原文本\", \"new_string\": \"新文本\"}",
+        run: write_ops::string_replace,
+        label: label_edit,
+        max_consecutive: WRITE_LIMIT,
+    },
+    ToolSpec {
+        name: "replace_lines",
+        kind: ToolKind::Write,
+        desc: "按行号区间整段替换，new_content 是该区间**替换后的完整文本**。\n\
+               适用于成块重写（如重写一个函数）。改单行优先用 string_replace。",
+        example: "{\"path\": \"src/main.rs\", \"start_line\": 10, \"end_line\": 20, \"new_content\": \"新的内容\"}",
+        run: write_ops::replace_lines,
+        label: label_lines,
+        max_consecutive: WRITE_LIMIT,
     },
 ];
 
@@ -152,6 +182,30 @@ fn label_search(args: &Value) -> String {
     format!("Search '{}'", q)
 }
 
+/// `Write src/main.rs`
+fn label_write(args: &Value) -> String {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    format!("Write {}", display_path(path))
+}
+
+/// `Edit src/main.rs`
+fn label_edit(args: &Value) -> String {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    format!("Edit {}", display_path(path))
+}
+
+/// `Edit src/main.rs L10 - L20`
+fn label_lines(args: &Value) -> String {
+    let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
+    let start = args.get("start_line").and_then(|v| v.as_u64()).unwrap_or(1);
+    let end = match args.get("end_line") {
+        Some(v) if v.is_string() => "end".to_string(),
+        Some(v) => v.as_u64().map(|n| n.to_string()).unwrap_or_else(|| "end".into()),
+        None => "end".to_string(),
+    };
+    format!("Edit {} L{} - L{}", display_path(path), start, end)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -173,16 +227,28 @@ mod tests {
     #[test]
     fn registry_drives_lookups() {
         assert!(is_known("read_file"));
-        assert!(!is_known("write_file"), "写工具尚未注册");
+        assert!(is_known("write_file"));
         assert!(!is_known("nonexistent"));
         assert_eq!(find("read_file").unwrap().kind, ToolKind::Read);
+        assert_eq!(find("write_file").unwrap().kind, ToolKind::Write);
         assert_eq!(max_consecutive("read_file"), READ_LIMIT);
+        assert_eq!(max_consecutive("write_file"), WRITE_LIMIT);
         assert_eq!(max_consecutive("unknown"), READ_LIMIT);
     }
 
     #[test]
     fn names_matches_registry() {
-        assert_eq!(names(), vec!["list_files", "read_file", "search_workspace"]);
+        assert_eq!(
+            names(),
+            vec![
+                "list_files",
+                "read_file",
+                "search_workspace",
+                "write_file",
+                "string_replace",
+                "replace_lines",
+            ]
+        );
     }
 
     #[test]
@@ -192,9 +258,15 @@ mod tests {
         assert!(s.contains("2. read_file："));
         assert!(s.contains("3. search_workspace："));
         assert!(s.contains("{\"path\": \"src/main.rs\""));
-        // 未包含的分类不应出现
+        // 写类不应出现在只读 prompt 中
         assert!(!s.contains("write_file"));
-        // 临时性过滤：写入类尚未注册，这里只验证机制可用
+        // 按分类过滤
+        let write = prompt_section(&[ToolKind::Write]);
+        assert!(write.contains("write_file"));
+        assert!(write.contains("string_replace"));
+        assert!(write.contains("replace_lines"));
+        assert!(!write.contains("list_files"));
+        // 临时性过滤：Exec 尚未注册，这里只验证机制可用
         let only_exec = prompt_section(&[ToolKind::Exec]);
         assert!(!only_exec.contains("read_file"));
     }
