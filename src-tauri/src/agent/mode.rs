@@ -13,14 +13,26 @@
 use crate::tools::registry::{self, ToolKind};
 
 /// 会话模式。由前端在每次发送消息时选定，可随时切换。
+///
+/// 三档权限是递进关系：对话 → 规划 → 执行。
+///
+/// - `Chat` 纯对话，只读。**刻意不注入任何模式纪律段**：
+///   它是默认路径，额外说明只会稀释既有的输出规则。
+/// - `Plan` = `Chat` + 产出任务清单，同样只读。
+/// - `Build` 全工具，按清单推进。
+///
+/// 关键约束：**模式隔离不能只靠 prompt**。模型受指令约束，但小模型与
+/// 上下文被压缩时仍可能幻觉调用写工具。因此 [`Mode::allows`] 是 Rust 侧
+/// 的硬闸门，命中即拒绝并回传可操作的错误文案，让模型改用只读方式继续。
+/// prompt 负责「引导」，Rust 负责「兜底」，两者缺一不可。
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum Mode {
-    /// 自由对话，不做额外约束。默认模式，行为与 v0.3.x 完全一致。
+    /// 纯对话：只读，不加模式纪律段。
     #[default]
     Chat,
-    /// 规划：仅只读工具，要求先产出可执行的 TODO 清单。
+    /// 规划：`Chat` + 产出任务清单。只读。
     Plan,
-    /// 执行：按 TODO 清单推进，允许全部工具。
+    /// 执行：全工具，按清单推进。
     Build,
 }
 
@@ -58,9 +70,10 @@ impl Mode {
     /// 本模式允许的工具能力分类，用于 `prompt_section` 过滤。
     pub fn kinds(self) -> &'static [ToolKind] {
         match self {
-            // Plan 只暴露 Read，对应 registry.rs 里 ToolKind 的原始设计意图
-            Mode::Plan => &[ToolKind::Read],
-            Mode::Chat | Mode::Build => &[ToolKind::Read, ToolKind::Write, ToolKind::Exec],
+            // 只读两档共用同一份白名单，对应 registry.rs 里 ToolKind 的原始设计意图。
+            // Plan 与 Chat 的差异不在权限，而在是否产出清单。
+            Mode::Chat | Mode::Plan => &[ToolKind::Read],
+            Mode::Build => &[ToolKind::Read, ToolKind::Write, ToolKind::Exec],
         }
     }
 
@@ -75,6 +88,11 @@ impl Mode {
         }
     }
 
+    /// 本模式是否全工具。
+    pub fn is_unrestricted(self) -> bool {
+        self == Mode::Build
+    }
+
     /// 构造「该模式下不可调用此工具」的错误文案。
     ///
     /// 必须给出**当前模式下真正可用的工具列表**，而不是笼统地说「不允许」——
@@ -86,13 +104,11 @@ impl Mode {
             .flat_map(|k| registry::names_by_kind(*k))
             .collect::<Vec<_>>()
             .join("、");
-        match self {
-            Mode::Plan => format!(
-                "Plan 模式为只读模式，不可调用 `{tool}`；本模式可用工具为：{allowed}。\
-                 如需修改文件或执行命令，请让用户切换到 Build 模式。"
-            ),
-            _ => format!("{} 模式不可调用 `{tool}`；本模式可用工具为：{allowed}", self.zh()),
-        }
+        format!(
+            "{} 模式为只读模式，不可调用 `{tool}`；本模式可用工具为：{allowed}。\
+             如需修改文件或执行命令，请提示用户切换到执行模式。",
+            self.zh()
+        )
     }
 }
 
@@ -126,19 +142,27 @@ mod tests {
     }
 
     #[test]
-    fn plan_allows_only_read_tools() {
-        for t in registry::names_by_kind(ToolKind::Read) {
-            assert!(Mode::Plan.allows(t), "Plan 应放行只读工具 {t}");
+    fn read_only_modes_allow_read_tools() {
+        for m in [Mode::Chat, Mode::Plan] {
+            for t in registry::names_by_kind(ToolKind::Read) {
+                assert!(m.allows(t), "{} 应放行只读工具 {t}", m.as_str());
+            }
         }
     }
 
     #[test]
-    fn plan_blocks_every_mutating_tool() {
-        for t in registry::names_by_kind(ToolKind::Write)
-            .into_iter()
-            .chain(registry::names_by_kind(ToolKind::Exec))
-        {
-            assert!(!Mode::Plan.allows(t), "Plan 必须拦截会改动工作区的工具 {t}");
+    fn read_only_modes_block_every_mutating_tool() {
+        for m in [Mode::Chat, Mode::Plan] {
+            for t in registry::names_by_kind(ToolKind::Write)
+                .into_iter()
+                .chain(registry::names_by_kind(ToolKind::Exec))
+            {
+                assert!(
+                    !m.allows(t),
+                    "{} 必须拦截会改动工作区的工具 {t}",
+                    m.as_str()
+                );
+            }
         }
     }
 
@@ -151,12 +175,24 @@ mod tests {
     }
 
     #[test]
-    fn chat_and_build_allow_everything() {
-        for m in [Mode::Chat, Mode::Build] {
-            for t in registry::names() {
-                assert!(m.allows(t), "{} 应放行 {t}", m.as_str());
-            }
+    fn build_allows_everything() {
+        for t in registry::names() {
+            assert!(Mode::Build.allows(t), "执行模式应放行 {t}");
         }
+    }
+
+    #[test]
+    fn only_build_is_unrestricted() {
+        assert!(Mode::Build.is_unrestricted());
+        assert!(!Mode::Chat.is_unrestricted());
+        assert!(!Mode::Plan.is_unrestricted());
+    }
+
+    /// 只读两档的权限必须完全一致：Plan 相对 Chat 的差异是「是否产出清单」，
+    /// 不是「能用什么工具」。若哪天两者的 kinds 分叉了，这条会拦住。
+    #[test]
+    fn chat_and_plan_share_identical_permissions() {
+        assert_eq!(Mode::Chat.kinds(), Mode::Plan.kinds());
     }
 
     #[test]
@@ -167,23 +203,29 @@ mod tests {
 
     #[test]
     fn reject_reason_lists_actually_allowed_tools() {
-        let msg = Mode::Plan.reject_reason("write_file");
-        assert!(msg.contains("write_file"), "应指明被拒的工具");
-        assert!(msg.contains("read_file"), "应列出 Plan 真正可用的工具");
-        // 可用清单里绝不能混入写/执行工具，否则模型会据此再次误调用
-        for t in registry::names_by_kind(ToolKind::Write)
-            .into_iter()
-            .chain(registry::names_by_kind(ToolKind::Exec))
-        {
-            let listed = msg.split("可用工具为：").nth(1).unwrap_or_default();
-            assert!(!listed.contains(t), "{t} 不应出现在 Plan 的可用清单中");
+        for m in [Mode::Chat, Mode::Plan] {
+            let msg = m.reject_reason("write_file");
+            assert!(msg.contains("write_file"), "应指明被拒的工具");
+            assert!(msg.contains("read_file"), "应列出真正可用的工具");
+            // 可用清单里绝不能混入写/执行工具，否则模型会据此再次误调用
+            for t in registry::names_by_kind(ToolKind::Write)
+                .into_iter()
+                .chain(registry::names_by_kind(ToolKind::Exec))
+            {
+                let listed = msg.split("可用工具为：").nth(1).unwrap_or_default();
+                assert!(!listed.contains(t), "{t} 不应出现在 {} 的可用清单中", m.as_str());
+            }
         }
     }
 
     #[test]
     fn reject_reason_stays_actionable() {
-        // 必须指引模型切换模式，否则容易陷入反复重试
-        assert!(Mode::Plan.reject_reason("run_script").contains("Build"));
+        // 必须指引用户切换模式，否则模型容易陷入反复重试。
+        // 措辞用「执行模式」而非内部标识 Build。
+        for m in [Mode::Chat, Mode::Plan] {
+            let msg = m.reject_reason("run_script");
+            assert!(msg.contains("执行模式"), "{} 的回执应指引切换", m.as_str());
+        }
     }
 
     #[test]

@@ -240,6 +240,14 @@ fn write_diag_log(info: &str) {
     }
 }
 
+/// 是否使用精简 System Prompt。
+///
+/// 抽成纯函数是为了让这条规则可测——它决定小模型在执行模式下能否拿到
+/// 写入工具，错了不会报错、只会「选了执行模式却什么都没发生」。
+fn use_compact_prompt(is_small: bool, mode: Mode) -> bool {
+    is_small && !mode.is_unrestricted()
+}
+
 pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(), String> {
     // 执行期间阻止系统休眠：耗时命令（编译/测试）被挂起会导致任务假死
     let _keep_awake = KeepAwake::new();
@@ -282,9 +290,10 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         let max_parse_retries = if is_small { MAX_PARSE_RETRIES_SMALL } else { MAX_PARSE_RETRIES };
 
         // 小模型使用精简 System Prompt，减少 Token 消耗。
-        // 规划模式例外：小模型虽难执行多轮写入，但产出计划正是它的强项，
-        // 因此仍走完整 prompt（工具清单会按模式过滤为只读）。
-        let system = if is_small && ctx.mode != Mode::Plan {
+        // 但 Build 模式一律走完整 prompt：精简版只注入只读工具，
+        // 那会让执行模式拿不到任何写入能力，模式语义直接落空。
+        // 清单协议、写入纪律、退出码判读全在完整版里，也是最不能省的。
+        let system = if use_compact_prompt(is_small, ctx.mode) {
             build_compact_system_prompt(&ws_display, ctx.global_rules)
         } else {
             build_system_prompt(&ws_display, ctx.global_rules, ctx.mode)
@@ -670,6 +679,32 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// 小模型在只读两档走精简 prompt，在执行档必须走完整 prompt。
+    ///
+    /// 这一条错了不会报错，只表现为「选了执行模式却什么都没发生」，
+    /// 因此单独钉住。
+    #[test]
+    fn compact_prompt_only_applies_to_readonly_modes() {
+        assert!(use_compact_prompt(true, Mode::Chat));
+        assert!(use_compact_prompt(true, Mode::Plan));
+        assert!(
+            !use_compact_prompt(true, Mode::Build),
+            "执行模式必须走完整 prompt，否则小模型拿不到任何写入工具"
+        );
+    }
+
+    /// 大模型永远走完整 prompt，精简版只是为小模型省 token。
+    #[test]
+    fn large_models_always_use_full_prompt() {
+        for mode in [Mode::Chat, Mode::Plan, Mode::Build] {
+            assert!(
+                !use_compact_prompt(false, mode),
+                "{} 在大模型下不应走精简 prompt",
+                mode.as_str()
+            );
+        }
+    }
 
     #[test]
     fn parse_tool_call_plain() {

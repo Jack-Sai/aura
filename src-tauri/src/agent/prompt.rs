@@ -81,8 +81,7 @@ p.push_str(&format!(
     p
 }
 
-/// 各模式的纪律段。Chat 返回空串——它是默认模式，无需任何额外约束，
-/// 这样也保证 v0.4.0 的 Chat 行为与 v0.3.x 完全一致。
+/// 各模式的纪律段。Chat 返回空串——它就是纯对话，不额外加任何说明。
 fn mode_section(mode: Mode) -> String {
     match mode {
         Mode::Chat => String::new(),
@@ -96,8 +95,8 @@ fn mode_section(mode: Mode) -> String {
              - 步骤要求：3~8 条，每条只做一件事，id 用 s1、s2 递增；\
              title 要具体到可验证（如「新增 config.rs 并注册路由」），禁止「优化代码」这类空话。\n\
              - 输出 <todo_plan> 后，仍须用 <answer> 简要说明计划要点与关键取舍。\n\
-             - 用户确认计划后会切换到执行模式；若用户此刻就要求你动手，\
-             说明他们不需要规划，请直接在 <answer> 中照做。\n"
+             - 模式由用户决定，你不会自动进入执行模式。若用户要求你直接动手，\
+             请在 <answer> 中说明：需要先切换到执行模式，你才能修改文件。\n"
             .to_string(),
         Mode::Build => "\n# 当前模式：执行（Build）\n\
              - 本模式允许写入文件与执行命令，按既定目标把事情做完。\n\
@@ -169,8 +168,8 @@ mod tests {
     use super::*;
 
     #[test]
-    fn full_prompt_includes_write_tools_and_discipline() {
-        let p = build_system_prompt("/ws", "", Mode::Chat);
+    fn build_prompt_includes_write_tools_and_discipline() {
+        let p = build_system_prompt("/ws", "", Mode::Build);
         // 写工具已注入
         assert!(p.contains("write_file"));
         assert!(p.contains("string_replace"));
@@ -189,23 +188,27 @@ mod tests {
         )));
     }
 
+    /// 只读两档的 prompt 都不得出现任何会改动工作区的工具名。
+    ///
+    /// Rust 闸门放行不了它们，prompt 却报有，会直接诱导模型去调一个
+    /// 注定被拒的工具。
     #[test]
-    fn plan_prompt_contains_no_mutating_tool_names() {
-        let p = build_system_prompt("/ws", "", Mode::Plan);
-        // 只读工具在
-        assert!(p.contains("read_file"));
-        assert!(p.contains("search_workspace"));
-        // 任何会改动工作区的工具名都不能出现：Rust 闸门不放行，
-        // prompt 却报有，会直接诱导模型去调一个注定被拒的工具
-        for t in registry::names_by_kind(ToolKind::Write)
-            .into_iter()
-            .chain(registry::names_by_kind(ToolKind::Exec))
-        {
-            assert!(!p.contains(t), "规划 prompt 不应出现工具名 {t}");
+    fn read_only_prompts_contain_no_mutating_tool_names() {
+        for mode in [Mode::Chat, Mode::Plan] {
+            let p = build_system_prompt("/ws", "", mode);
+            for t in registry::names_by_kind(ToolKind::Write)
+                .into_iter()
+                .chain(registry::names_by_kind(ToolKind::Exec))
+            {
+                assert!(!p.contains(t), "{} prompt 不应出现工具名 {t}", mode.as_str());
+            }
+            // 相应纪律段也一并消失
+            assert!(!p.contains("# 修改文件"), "{}", mode.as_str());
+            assert!(!p.contains("# 执行命令"), "{}", mode.as_str());
+            // 只读工具必须在
+            assert!(p.contains("read_file"), "{}", mode.as_str());
+            assert!(p.contains("search_workspace"), "{}", mode.as_str());
         }
-        // 相应纪律段也一并消失
-        assert!(!p.contains("# 修改文件"));
-        assert!(!p.contains("# 执行命令"));
     }
 
     #[test]
@@ -279,18 +282,48 @@ mod tests {
 
     #[test]
     fn compact_prompt_shorter() {
-        let full = build_system_prompt("/ws", "", Mode::Chat);
+        // 与最大的一份（Build）比，精简版才有意义
+        let full = build_system_prompt("/ws", "", Mode::Build);
         let compact = build_compact_system_prompt("/ws", "");
         assert!(compact.len() < full.len() / 2);
     }
 
-/// Plan 模式的小模型必须走完整 prompt，否则拿不到 <todo_plan> 协议。
-#[test]
-    fn plan_prompt_is_longer_than_compact_but_has_no_write_tools() {
+    /// Chat 就是纯对话，不注入任何模式纪律段。
+    ///
+    /// 它的只读性由 Rust 闸门与工具清单保证，无需 prompt 再啰嗦一遍。
+    #[test]
+    fn chat_has_no_mode_section() {
+        let p = build_system_prompt("/ws", "", Mode::Chat);
+        assert!(!p.contains("# 当前模式"));
+        assert!(!p.contains("<todo_plan>"));
+        assert!(!p.contains("<todo_update>"));
+    }
+
+    /// Plan 相对 Chat 的唯一差别就是产出清单。
+    #[test]
+    fn plan_differs_from_chat_only_by_the_plan_protocol() {
+        let chat = build_system_prompt("/ws", "", Mode::Chat);
         let plan = build_system_prompt("/ws", "", Mode::Plan);
-        let compact = build_compact_system_prompt("/ws", "");
-        assert!(plan.len() > compact.len());
-        assert!(!plan.contains("write_file"));
+        assert!(plan.contains("<todo_plan>"));
+        assert!(!chat.contains("<todo_plan>"));
+        // 工具清单必须完全一致：两档权限相同，prompt 也不该有出入
+        assert_eq!(
+            registry::prompt_section(Mode::Chat.kinds()),
+            registry::prompt_section(Mode::Plan.kinds()),
+            "Chat 与 Plan 的工具清单应完全一致"
+        );
+    }
+
+    /// Plan 模式不得声称会自行切到执行模式——模式由用户决定。
+    #[test]
+    fn plan_does_not_promise_automatic_mode_switch() {
+        let p = build_system_prompt("/ws", "", Mode::Plan);
+        assert!(
+            !p.contains("用户确认计划后会切换到执行模式"),
+            "不存在自动切换，向模型传达该预期会让它在用户催促时越权"
+        );
+        // 反之必须把决定权交回用户
+        assert!(p.contains("切换到执行模式"));
     }
 
     #[test]
