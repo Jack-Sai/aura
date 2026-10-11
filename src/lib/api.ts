@@ -1,11 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { ChatMessage } from "../store";
+import type { Todo } from "./todo";
 
 export interface SavedSession {
   id: string;
   title: string;
   workspace: string;
   messages: ChatMessage[];
+  /** 任务清单。旧版本会话可能没有该字段，按空处理 */
+  todos?: Todo[];
 }
 
 export interface ModelInfo {
@@ -21,8 +24,12 @@ export interface ModelInfo {
   pinned: boolean;
 }
 
-export function sendMessage(sessionId: string, message: string): Promise<void> {
-  return invoke("send_message", { sessionId, message });
+export function sendMessage(
+  sessionId: string,
+  message: string,
+  mode: string,
+): Promise<void> {
+  return invoke("send_message", { sessionId, message, mode });
 }
 
 export function stopMessage(): Promise<void> {
@@ -44,6 +51,14 @@ export function saveSession(
   messages: ChatMessage[],
 ): Promise<void> {
   return invoke("save_session", { id, title, workspace, messages });
+}
+
+/**
+ * 覆盖保存任务清单，返回后端清洗过的结果。
+ * 后端会按与模型产出相同的规则去空标题、去重复 id。
+ */
+export function saveTodos(sessionId: string, todos: Todo[]): Promise<Todo[]> {
+  return invoke("save_todos", { sessionId, todos });
 }
 
 export function setWorkspace(path: string): Promise<string> {

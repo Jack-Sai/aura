@@ -10,6 +10,8 @@ use tokio::sync::Mutex as AsyncMutex;
 
 use crate::agent::mode::Mode;
 use crate::agent::runner::{run_turn, TurnContext};
+use crate::agent::todo;
+use crate::agent::Todo;
 use crate::api::config::{load_config, normalize, save_config};
 use crate::api::{ProviderConfig, Router};
 use crate::db;
@@ -183,6 +185,7 @@ pub struct SessionSnapshot {
     pub title: String,
     pub workspace: String,
     pub messages: Vec<Value>,
+    pub todos: Vec<Todo>,
 }
 
 #[tauri::command]
@@ -196,8 +199,27 @@ pub fn load_sessions(state: State<'_, AppState>) -> Result<Vec<SessionSnapshot>,
             title: s.title,
             workspace: s.workspace,
             messages: s.messages,
+            todos: s.todos,
         })
         .collect())
+}
+
+/// 覆盖保存任务清单。会经 `todo::sanitize` 与模型产出的清单共用一套
+/// 规范化规则，避免手动编辑出的结构与模型生成的不同，
+/// 导致后续 todo_update 在某些会话里莫名失配。
+///
+/// 返回清洗后的清单，让前端立即与落盘态对齐，而不是等下次加载才发现
+/// 某几条被丢弃。
+#[tauri::command]
+pub fn save_todos(
+    state: State<'_, AppState>,
+    session_id: String,
+    todos: Vec<Todo>,
+) -> Result<Vec<Todo>, String> {
+    let (clean, _dropped) = todo::sanitize(todos);
+    let db = state.db.lock().map_err(lock_err)?;
+    db::save_todos(&db, &session_id, &clean).map_err(|e| e.to_string())?;
+    Ok(clean)
 }
 
 #[tauri::command]

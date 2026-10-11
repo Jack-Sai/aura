@@ -9,6 +9,7 @@ pub struct SavedSession {
     pub title: String,
     pub workspace: String,
     pub messages: Vec<Value>,
+    pub todos: Vec<crate::agent::Todo>,
 }
 
 pub fn now() -> i64 {
@@ -36,6 +37,7 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
              workspace TEXT NOT NULL,
              history_json TEXT NOT NULL DEFAULT '[]',
              model_idx INTEGER NOT NULL DEFAULT 0,
+             todos_json TEXT NOT NULL DEFAULT '[]',
              updated_at INTEGER NOT NULL DEFAULT 0
          );
          CREATE TABLE IF NOT EXISTS messages (
@@ -50,13 +52,29 @@ pub fn open(path: &Path) -> Result<Connection, rusqlite::Error> {
 }
 
 /// 迁移历史脏数据：早期 set_workspace 曾写入带 //?/ 扩展前缀的键，
-/// 与普通路径并存导致侧边栏出现重复的 src-tauri 分组
+/// 与普通路径并存导致侧边栏出现重复的 src-tauri 分组。
+/// 同时补齐 v0.4.0 新增的 `todos_json` 列。
 pub(crate) fn migrate(conn: &Connection) -> Result<(), rusqlite::Error> {
     conn.execute(
         "UPDATE sessions SET workspace = replace(workspace, '//?/', '')
          WHERE workspace LIKE '//?/%'",
         [],
     )?;
+
+    // CREATE TABLE IF NOT EXISTS 不会给已存在的表补列，老库必须单独 ALTER。
+    // 用 pragma_table_info 判断而非「执行后再看报错」，因为 SQLite 不支持
+    // IF NOT EXISTS 形式的 ADD COLUMN，重复执行会直接失败。
+    let has_todos = conn
+        .prepare("SELECT 1 FROM pragma_table_info('sessions') WHERE name = 'todos_json'")?
+        .query([])?
+        .next()?
+        .is_some();
+    if !has_todos {
+        conn.execute(
+            "ALTER TABLE sessions ADD COLUMN todos_json TEXT NOT NULL DEFAULT '[]'",
+            [],
+        )?;
+    }
     Ok(())
 }
 
@@ -139,6 +157,38 @@ pub fn load_history(
     }
 }
 
+/// 覆盖保存任务清单，绝不插入会话行。
+///
+/// 与 [`save_history`] 同理：会话行由前端 `save_session` 创建，此处若 INSERT
+/// 会写出 `title=''` 的脏行，让侧边栏多出空白工作区分组。
+pub fn save_todos(
+    conn: &Connection,
+    id: &str,
+    todos: &[crate::agent::Todo],
+) -> Result<(), rusqlite::Error> {
+    let json = serde_json::to_string(todos).map_err(json_err)?;
+    conn.execute(
+        "UPDATE sessions SET todos_json = ?2 WHERE id = ?1",
+        params![id, json],
+    )?;
+    Ok(())
+}
+
+/// 读取任务清单。会话不存在或内容损坏时返回空清单而非报错——
+/// 清单是增强信息，不该让整个会话加载失败。
+pub fn load_todos(
+    conn: &Connection,
+    id: &str,
+) -> Result<Vec<crate::agent::Todo>, rusqlite::Error> {
+    let mut stmt = conn.prepare_cached("SELECT todos_json FROM sessions WHERE id = ?1")?;
+    let mut rows = stmt.query(params![id])?;
+    let Some(row) = rows.next()? else {
+        return Ok(Vec::new());
+    };
+    let json: String = row.get(0)?;
+    Ok(serde_json::from_str(&json).unwrap_or_default())
+}
+
 fn load_messages(conn: &Connection, session_id: &str) -> Result<Vec<Value>, rusqlite::Error> {
     let mut stmt =
         conn.prepare_cached("SELECT payload FROM messages WHERE session_id = ?1 ORDER BY seq")?;
@@ -164,11 +214,13 @@ pub fn load_sessions(conn: &Connection) -> Result<Vec<SavedSession>, rusqlite::E
     for row in rows {
         let (id, title, workspace) = row?;
         let messages = load_messages(conn, &id)?;
+        let todos = load_todos(conn, &id)?;
         out.push(SavedSession {
             id,
             title,
             workspace,
             messages,
+            todos,
         });
     }
     Ok(out)
@@ -371,6 +423,139 @@ mod tests {
         assert_eq!(ws1.as_deref(), Some("E:/dev/aura"));
         assert_eq!(ws2.as_deref(), Some("E:/dev/aura"));
 
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// v0.4.0 新增列。老库由 migrate() 的 ALTER TABLE 补齐，
+    /// 这条测试刻意建一个不含 todos_json 的旧结构库来验证迁移。
+    #[test]
+    fn open_migrates_legacy_table_without_todos_column() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "legacy-todos"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("legacy.db");
+
+        // 手工造一个 v0.3.x 结构的库：有会话行，但没有 todos_json 列
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE sessions (
+                 id TEXT PRIMARY KEY,
+                 title TEXT NOT NULL,
+                 workspace TEXT NOT NULL,
+                 history_json TEXT NOT NULL DEFAULT '[]',
+                 model_idx INTEGER NOT NULL DEFAULT 0,
+                 updated_at INTEGER NOT NULL DEFAULT 0
+             );
+             INSERT INTO sessions (id, title, workspace, updated_at)
+             VALUES ('old', '旧会话', 'E:/dev/aura', 1);",
+        )
+        .unwrap();
+        drop(conn);
+
+        // 重新打开应完成迁移，且旧会话行不能丢
+        let conn = open(&path).unwrap();
+        let loaded = load_sessions(&conn).unwrap();
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[0].id, "old");
+        assert_eq!(loaded[0].title, "旧会话");
+        assert!(loaded[0].todos.is_empty(), "旧会话默认空清单");
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// 迁移必须可重复执行：open() 每次启动都会跑 migrate()，
+    /// 第二次运行若再 ALTER 一次会直接报错。
+    #[test]
+    fn migration_is_idempotent() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "idempotent"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let conn = open(&path).unwrap();
+        drop(conn);
+        // 第二次 open 再次执行 migrate，不应因列已存在而失败
+        let conn = open(&path).unwrap();
+        drop(conn);
+        let _ = open(&path).unwrap();
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn todos_roundtrip_and_survive_message_saves() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "todos"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("t.db");
+        let conn = open(&path).unwrap();
+        save_session(&conn, "s1", "t", "E:/dev/aura", &[]).unwrap();
+
+        let todos = vec![
+            crate::agent::Todo::new("s1", "建表"),
+            crate::agent::Todo {
+                id: "s2".into(),
+                title: "写测试".into(),
+                status: crate::agent::TodoStatus::Done,
+            },
+        ];
+        save_todos(&conn, "s1", &todos).unwrap();
+
+        // 保存 UI 消息（全量重写 messages）不应影响独立列
+        save_session(
+            &conn,
+            "s1",
+            "t",
+            "E:/dev/aura",
+            &[serde_json::json!({"id":"m1","role":"user","content":"hi"})],
+        )
+        .unwrap();
+
+        let loaded = load_sessions(&conn).unwrap();
+        let s = loaded.iter().find(|s| s.id == "s1").unwrap();
+        assert_eq!(s.todos.len(), 2);
+        assert_eq!(s.todos[0].title, "建表");
+        // 关键：状态枚举必须原样往返，否则前端读到的是错的进度
+        assert_eq!(s.todos[1].status, crate::agent::TodoStatus::Done);
+        assert_eq!(s.messages.len(), 1);
+
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn load_todos_on_missing_session_is_empty_not_error() {
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "no-session"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("t.db")).unwrap();
+        assert!(load_todos(&conn, "nope").unwrap().is_empty());
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn save_todos_does_not_create_ghost_session() {
+        // 会话行只由 save_session 创建；save_todos 若 INSERT 会写出
+        // title='' 的脏行，让侧边栏多出空白工作区分组
+        let dir = std::env::temp_dir().join(format!(
+            "aura-db-test-{}-{}",
+            std::process::id(),
+            "ghost"
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let conn = open(&dir.join("t.db")).unwrap();
+        save_todos(&conn, "ghost", &[crate::agent::Todo::new("s1", "任务")]).unwrap();
+        assert!(load_sessions(&conn).unwrap().is_empty());
         std::fs::remove_dir_all(&dir).ok();
     }
 }

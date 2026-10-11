@@ -4,6 +4,8 @@ pub mod mode;
 pub mod parser;
 pub mod prompt;
 pub mod runner;
+pub mod todo;
 
 pub use mode::Mode;
 pub use parser::{Event, Finish, Parser};
+pub use todo::{Todo, TodoStatus};

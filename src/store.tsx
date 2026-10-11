@@ -23,6 +23,7 @@ import {
   stopMessage as stopMessageApi,
   type ModelInfo,
 } from "./lib/api";
+import { type Mode } from "./lib/mode";
 
 // 统一工作区键：反斜杠转 /，并剥离 Windows 扩展路径的 //?/ 前缀，
 // 保证与 Rust 侧 canonicalize 后的键一致
@@ -58,6 +59,8 @@ interface State {
   busy: boolean;
   models: ModelInfo[];
   selectedModel: string;
+  /** 当前会话模式，每次发送时随消息带上 */
+  mode: Mode;
 }
 
 interface StoreValue extends State {
@@ -75,6 +78,7 @@ interface StoreValue extends State {
   deleteSession: (id: string) => void;
   removeWorkspace: (path: string) => Promise<void>;
   setModel: (id: string) => Promise<void>;
+  setMode: (m: Mode) => void;
   refreshModels: () => Promise<void>;
 }
 
@@ -128,6 +132,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     busy: false,
     models: [],
     selectedModel: "",
+    mode: "chat",
   });
 
   const stateRef = useRef(state);
@@ -362,6 +367,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
   }, []);
 
+  const setMode = useCallback((m: Mode) => {
+    setState((s) => (s.mode === m ? s : { ...s, mode: m }));
+  }, []);
+
   const refreshModels = useCallback(async () => {
     try {
       const [models, selectedModel] = await Promise.all([
@@ -411,7 +420,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }));
       persistNow(sessionId, title, current.workspace, messages);
       try {
-        await sendMessageApi(sessionId, text);
+        await sendMessageApi(sessionId, text, stateRef.current.mode);
       } catch (e) {
         if (!sawErrorRef.current) {
           appendBlocks(sessionId, assistantMsg.id, (b) => [
@@ -559,6 +568,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       removeWorkspace,
       setModel,
+      setMode,
       refreshModels,
     }),
     [
@@ -576,6 +586,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       deleteSession,
       removeWorkspace,
       setModel,
+      setMode,
       refreshModels,
     ],
   );
