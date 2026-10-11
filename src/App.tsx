@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from "react";
-import ContextMenu, { type MenuItem, type MenuState } from "./components/ContextMenu";
+import ContextMenu, { type MenuState } from "./components/ContextMenu";
 import InputArea from "./components/InputArea";
 import MessageList from "./components/MessageList";
 import Sidebar from "./components/Sidebar";
 import TitleBar from "./components/TitleBar";
 import { useTheme, type Theme } from "./hooks/useTheme";
+import { workspaceMenuItems } from "./lib/workspaceMenu";
 import SettingsPage from "./pages/SettingsPage";
 import { StoreProvider, useStore } from "./store";
 
@@ -61,22 +62,13 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
     }
   }, [activeSession?.messages, view]);
 
-  useEffect(() => {
-    const onContextMenu = (e: MouseEvent) => {
-      if (shouldUseNativeMenu(e.target)) return;
-      e.preventDefault();
-    };
-    window.addEventListener("contextmenu", onContextMenu, true);
-    return () => window.removeEventListener("contextmenu", onContextMenu, true);
-  }, []);
-
   function onContextMenu(e: ReactMouseEvent) {
     if (shouldUseNativeMenu(e.target)) return;
-    e.preventDefault();
 
     const target = e.target as HTMLElement;
     const sessionEl = target.closest<HTMLElement>("[data-ctx-session]");
     if (sessionEl) {
+      e.preventDefault();
       const id = sessionEl.dataset.ctxSession ?? "";
       setMenu({
         x: e.clientX,
@@ -92,18 +84,18 @@ function Shell({ theme, setTheme }: { theme: Theme; setTheme: (t: Theme) => void
     const wsEl = target.closest<HTMLElement>("[data-ctx-workspace]");
     if (wsEl) {
       const path = wsEl.dataset.ctxWorkspace ?? "";
-      const items: MenuItem[] = [];
-      if (path !== workspace) {
-        items.push({
-          label: "删除",
-          danger: true,
-          onClick: () => setConfirmWs(path),
-        });
-      }
-      if (items.length > 0) {
-        setMenu({ x: e.clientX, y: e.clientY, items });
-      }
+      const items = workspaceMenuItems(path, workspace, (p) => setConfirmWs(p));
+      // 当前工作区没有可提供的操作（不能删除自己）。
+      // 此处必须放行原生菜单：若先 preventDefault 再判断，用户右键第一个
+      // 工作区时会「自定义菜单不显示、系统菜单也不显示」——什么都不会发生。
+      if (items.length === 0) return;
+      e.preventDefault();
+      setMenu({ x: e.clientX, y: e.clientY, items });
+      return;
     }
+
+    // 其余区域统一用原生菜单
+    e.preventDefault();
   }
 
   return (
