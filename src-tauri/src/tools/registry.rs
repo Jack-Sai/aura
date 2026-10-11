@@ -12,7 +12,7 @@ use std::path::Path;
 
 use serde_json::Value;
 
-use super::{display_path, fs_ops, search, write_ops, ToolOutput};
+use super::{display_path, exec, fs_ops, search, write_ops, ToolOutput};
 
 /// 工具能力分类。决定该工具是否注入 prompt，以及未来的模式隔离
 /// （v0.4.x 的 Plan 模式只暴露 `Read`）。
@@ -45,6 +45,7 @@ pub struct ToolSpec {
 
 const READ_LIMIT: u32 = 5;
 const WRITE_LIMIT: u32 = 10;
+const EXEC_LIMIT: u32 = 6;
 
 /// 全部内置工具。新增工具在此追加即可，无需改动其他任何文件。
 pub const TOOLS: &[ToolSpec] = &[
@@ -104,6 +105,17 @@ pub const TOOLS: &[ToolSpec] = &[
         run: write_ops::replace_lines,
         label: label_lines,
         max_consecutive: WRITE_LIMIT,
+    },
+    ToolSpec {
+        name: "run_script",
+        kind: ToolKind::Exec,
+        desc: "在工作区根目录执行一条命令（支持管道等复合命令），返回退出码与输出。\n\
+               用于「改完代码后编译/测试」这类验证闭环；输出过长会自动截断。\n\
+               危险命令（递归删除根目录、格式化磁盘等）会被拦截。",
+        example: "{\"command\": \"cargo build\"}（可选 \"timeout_ms\": 120000）",
+        run: exec::run_script,
+        label: label_command,
+        max_consecutive: EXEC_LIMIT,
     },
 ];
 
@@ -194,6 +206,23 @@ fn label_edit(args: &Value) -> String {
     format!("Edit {}", display_path(path))
 }
 
+/// `Exec 'cargo build'`（超长命令截断，避免撑爆动作卡片）
+fn label_command(args: &Value) -> String {
+    let cmd = args
+        .get("command")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .trim();
+    let first = cmd.lines().next().unwrap_or(cmd).trim();
+    if first.chars().count() > 60 {
+        let mut s: String = first.chars().take(60).collect();
+        s.push('…');
+        format!("Exec '{}'", s)
+    } else {
+        format!("Exec '{}'", first)
+    }
+}
+
 /// `Edit src/main.rs L10 - L20`
 fn label_lines(args: &Value) -> String {
     let path = args.get("path").and_then(|v| v.as_str()).unwrap_or("");
@@ -247,8 +276,17 @@ mod tests {
                 "write_file",
                 "string_replace",
                 "replace_lines",
+                "run_script",
             ]
         );
+    }
+
+    #[test]
+    fn exec_tool_is_registered_with_its_limit() {
+        assert!(is_known("run_script"));
+        assert_eq!(find("run_script").unwrap().kind, ToolKind::Exec);
+        assert_eq!(max_consecutive("run_script"), EXEC_LIMIT);
+        assert_eq!(label_command(&serde_json::json!({ "command": "cargo build" })), "Exec 'cargo build'");
     }
 
     #[test]

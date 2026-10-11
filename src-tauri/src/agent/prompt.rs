@@ -11,7 +11,11 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
     p.push('\n');
 
     // 工具清单由注册表生成，新增工具无需改动此处
-    p.push_str(&registry::prompt_section(&[ToolKind::Read, ToolKind::Write]));
+    p.push_str(&registry::prompt_section(&[
+        ToolKind::Read,
+        ToolKind::Write,
+        ToolKind::Exec,
+    ]));
 
     p.push_str(
         "\n# 输出规则\n\
@@ -35,6 +39,17 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str) -> String {
              报「未找到」时先重新 read_file 对照，不要反复重试同样的参数。\n\
              - 一次工具调用只改一个文件，改完确认结果再改下一个。\n\
              - 写工具只会返回写入摘要而非文件内容；需要确认改对了什么，再 read_file 查看。\n",
+        );
+    }
+
+    // 命令执行纪律：仅在存在 Exec 类工具时注入
+    if !registry::names_by_kind(ToolKind::Exec).is_empty() {
+        p.push_str(
+            "\n# 执行命令\n\
+             - run_script 用于验证修改结果（编译、跑测试、查看 git diff），不要用它做与当前任务无关的操作。\n\
+             - 先看返回的**退出码**：非 0 表示命令失败，必须读懂输出并修复，不要在失败状态下继续往下走。\n\
+             - 输出过长会被截断，只保留头尾；关键信息请改用更精确的命令重新获取。\n\
+             - 命令失败后不要原样重试，先根据错误信息调整命令或修改代码。\n",
         );
     }
 
@@ -116,6 +131,10 @@ mod tests {
         // 写入纪律段
         assert!(p.contains("# 修改文件"));
         assert!(p.contains("read_file 确认现有内容"));
+        // 命令执行工具与纪律段
+        assert!(p.contains("run_script"));
+        assert!(p.contains("# 执行命令"));
+        assert!(p.contains("退出码"));
         // 连续调用上限来自注册表而非硬编码
         assert!(p.contains(&format!(
             "连续调用 {} 次",

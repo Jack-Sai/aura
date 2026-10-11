@@ -1,3 +1,4 @@
+pub mod exec;
 pub mod fs_ops;
 pub mod registry;
 pub mod search;
