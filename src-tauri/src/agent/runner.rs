@@ -9,6 +9,7 @@ use tauri::{AppHandle, Emitter};
 use crate::api::Router;
 use crate::tools;
 use super::context::{compress, estimate_tokens, local_trim, needs_compression};
+use super::keepawake::KeepAwake;
 use super::parser::{Event, Finish, Parser};
 use super::prompt::{build_compact_system_prompt, build_system_prompt, is_small_model};
 
@@ -148,6 +149,8 @@ fn write_diag_log(info: &str) {
 }
 
 pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(), String> {
+    // 执行期间阻止系统休眠：耗时命令（编译/测试）被挂起会导致任务假死
+    let _keep_awake = KeepAwake::new();
     ctx.history
         .push(json!({ "role": "user", "content": user_message }));
     let mut parse_failures: u32 = 0;

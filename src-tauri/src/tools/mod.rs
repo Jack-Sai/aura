@@ -127,6 +127,10 @@ pub fn resolve_path_for_write(root: &Path, path: &str) -> Result<PathBuf, String
 ///
 /// 同目录保证 rename 在同一文件系统内是原子的；直接写目标文件的风险是
 /// 写入中途崩溃/磁盘满会留下半截文件，rename 则要么完整替换要么保持原样。
+///
+/// 并发写入保护：写入类工具由 `run_turn` 单循环串行调用，同一文件不会
+/// 出现两个并发写者；原子写保证任一时刻磁盘上的文件都是完整版本，不会
+/// 出现「写了一半」的脏文件。
 pub fn atomic_write(target: &Path, content: &str) -> Result<(), String> {
     let dir = target
         .parent()

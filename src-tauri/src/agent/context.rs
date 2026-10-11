@@ -96,6 +96,48 @@ pub fn local_trim(messages: &[Value], context_limit: usize, extra_tokens: usize)
     out
 }
 
+/// 单条消息进入摘要 prompt 时的字符上限。
+const SUMMARY_ITEM_CAP: usize = 800;
+/// 摘要 prompt 中 transcript 的总字符上限。
+const SUMMARY_TOTAL_CAP: usize = 12_000;
+
+/// 摘要用的消息截断：保留头尾，中间标注省略量。
+///
+/// 头尾都要留——工具结果的**结尾**往往才是关键信息（如编译报错的最后
+/// 几行、错误原因），只留头部会把真正有用的部分裁掉。
+fn truncate_for_summary(content: &str, cap: usize) -> String {
+    let chars: Vec<char> = content.chars().collect();
+    if chars.len() <= cap {
+        return content.to_string();
+    }
+    let head_n = cap * 2 / 3;
+    let tail_n = cap - head_n;
+    let head: String = chars[..head_n].iter().collect();
+    let tail: String = chars[chars.len() - tail_n..].iter().collect();
+    let omitted = chars.len() - head_n - tail_n;
+    format!("{}\n…（此处省略 {} 字符）…\n{}", head, omitted, tail)
+}
+
+/// 构建摘要 prompt 的 transcript。
+///
+/// v0.3.2 之前这里是逐字拼接完整内容——写入任务下 `read_file` 的结果
+/// 动辄数百行，逐条累积会让**摘要请求本身**就撑爆上下文，压缩彻底失效。
+/// 这里对每条消息预截断，并对总量设上限。
+fn build_transcript(old: &[Value]) -> String {
+    let mut transcript = String::new();
+    for msg in old {
+        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
+        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
+        if transcript.chars().count() >= SUMMARY_TOTAL_CAP {
+            transcript.push_str("…（更早的内容因长度限制未纳入摘要）…\n");
+            break;
+        }
+        let piece = truncate_for_summary(content, SUMMARY_ITEM_CAP);
+        transcript.push_str(&format!("[{role}]\n{piece}\n\n"));
+    }
+    transcript
+}
+
 pub async fn compress(
     router: &Router,
     model_idx: usize,
@@ -103,20 +145,15 @@ pub async fn compress(
     context_limit: usize,
 ) -> Option<Vec<Value>> {
     let (old, recent) = split_for_compression(messages, context_limit)?;
-
-    let mut transcript = String::new();
-    for msg in old {
-        let role = msg.get("role").and_then(|v| v.as_str()).unwrap_or("");
-        let content = msg.get("content").and_then(|v| v.as_str()).unwrap_or("");
-        transcript.push_str(&format!("[{}]\n{}\n\n", role, content));
-    }
+    let transcript = build_transcript(old);
 
     let prompt = format!(
         "请将以下历史对话压缩为简明的前情提要。要求：\n\
          1. 使用中文；\n\
-         2. 保留关键结论、已读文件路径、未完成的任务；\n\
+         2. 保留关键结论、已读文件路径、已修改的文件、未完成的任务；\n\
          3. 300 字以内，直接输出提要正文。\n\
-         ---\n{}",
+         --- {} ---\n{}",
+        transcript.chars().count(),
         transcript
     );
 
@@ -141,6 +178,64 @@ pub async fn compress(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn truncate_keeps_head_and_tail() {
+        let long = "a".repeat(SUMMARY_ITEM_CAP * 3);
+        let out = truncate_for_summary(&long, SUMMARY_ITEM_CAP);
+        assert!(out.contains("此处省略"));
+        // 头部与尾部都保留：工具结果的关键信息通常在结尾
+        assert!(out.starts_with('a'));
+        assert!(out.ends_with('a'));
+    }
+
+    #[test]
+    fn truncate_leaves_short_content_intact() {
+        assert_eq!(truncate_for_summary("短内容", SUMMARY_ITEM_CAP), "短内容");
+    }
+
+    #[test]
+    fn truncate_is_utf8_safe() {
+        let long = "中".repeat(SUMMARY_ITEM_CAP * 2);
+        let out = truncate_for_summary(&long, SUMMARY_ITEM_CAP);
+        assert!(out.chars().count() <= SUMMARY_ITEM_CAP + 20);
+        assert!(out.contains('中'));
+    }
+
+    #[test]
+    fn transcript_caps_each_item_and_total() {
+        // 单条超长消息被截断
+        let msgs = vec![
+            json!({ "role": "user", "content": "x".repeat(SUMMARY_ITEM_CAP * 5) }),
+        ];
+        let t = build_transcript(&msgs);
+        assert!(t.chars().count() < SUMMARY_ITEM_CAP * 2);
+        assert!(t.contains("此处省略"));
+
+        // 多条消息总量受限
+        let many: Vec<Value> = (0..50)
+            .map(|_| json!({ "role": "user", "content": "y".repeat(500) }))
+            .collect();
+        let t = build_transcript(&many);
+        assert!(
+            t.chars().count() < SUMMARY_TOTAL_CAP * 2,
+            "transcript 未受总量约束: {}",
+            t.chars().count()
+        );
+    }
+
+    #[test]
+    fn transcript_keeps_early_messages_content() {
+        let msgs = vec![
+            json!({ "role": "user", "content": "第一条消息内容" }),
+            json!({ "role": "assistant", "content": "第二条消息内容" }),
+        ];
+        let t = build_transcript(&msgs);
+        assert!(t.contains("第一条消息内容"));
+        assert!(t.contains("第二条消息内容"));
+        assert!(t.contains("[user]"));
+        assert!(t.contains("[assistant]"));
+    }
 
     fn msg(role: &str, content: &str) -> Value {
         json!({ "role": role, "content": content })
