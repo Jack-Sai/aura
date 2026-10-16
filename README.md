@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/version-v0.5.0-blue.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.5.1-blue.svg" alt="Version" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/Tauri-2.0-orange.svg" alt="Tauri" />
 </p>
@@ -42,7 +42,10 @@
 
 任务清单在全部步骤完成后自动清空，清单随会话保存，重启后自动恢复。
 
-> **从 v0.5.0 起的变更**：对话模式由全权限改为只读。升级后若希望 Aura 直接修改文件，请将模式切换到「执行」。
+> **行为变更提醒**
+>
+> - 从 v0.5.0 起：对话模式由全权限改为只读。升级后若希望 Aura 直接修改文件，请将模式切换到「执行」。
+> - 从 v0.5.1 起：修复了执行输出较多的命令（如安装依赖、编译项目）时界面长时间无响应的问题。
 
 ## 内置厂商
 

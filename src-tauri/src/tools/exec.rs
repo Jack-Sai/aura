@@ -9,6 +9,12 @@
 //!
 //! 本工具由 `tools::execute` 在 `spawn_blocking` 中调用，阻塞子进程不会
 //! 占用 tokio worker，SSE 流式输出与停止按钮保持响应。
+//!
+//! **子进程的管道必须在等待退出之前抽干**（见 [`PipeDrain`]）：匿名管道
+//! 缓冲区只有几 KB，子进程写满后阻塞在 `write()` 上永不退出，而父进程在
+//! `try_wait()` 轮询里空转到超时。这是 v0.5.1 修复的性能缺陷——实测输出
+//! 330KB 的命令，改动前 >12s 未退出（走超时分支），改动后 160ms 完成。
+//! `pnpm install`、`cargo build` 这类输出较多的命令几乎必然触发。
 
 use std::path::Path;
 use std::process::Stdio;
@@ -224,6 +230,16 @@ pub fn run_script(root: &Path, args: &Value) -> Result<ToolOutput, String> {
         .spawn()
         .map_err(|e| format!("无法启动进程: {}", e))?;
 
+    // ★ 必须**在**开始轮询之前就把管道交给后台线程读空。
+    //
+    // 匿名管道缓冲区只有几 KB，子进程写满后会阻塞在 `write()` 上永不退出；
+    // 父进程此时只在 `try_wait()` 里轮询，双方互等到超时才收场。
+    // 实测同一条输出 330KB 的命令：本实现 >12s 未退出，改为边读边等后 160ms 完成。
+    //
+    // 不能改用 `wait_with_output()`：它确实会先读管道（因而不会死锁），
+    // 但没有超时与取消能力，模型传 `timeout_ms: 600000` 时界面会真的卡十分钟。
+    let drain = PipeDrain::attach(&mut child);
+
     // 轮询等待：既能超时中断，也能在等待期间响应取消（由上层 tokio select 处理）
     let deadline = std::time::Instant::now() + Duration::from_millis(timeout_ms);
     let exit_code = loop {
@@ -233,7 +249,7 @@ pub fn run_script(root: &Path, args: &Value) -> Result<ToolOutput, String> {
                 if std::time::Instant::now() >= deadline {
                     let _ = child.kill();
                     let _ = child.wait();
-                    let partial = collect_output(child);
+                    let partial = drain.join();
                     let (out, truncated) = truncate_output(&partial, MAX_OUTPUT);
                     return Ok(ToolOutput {
                         label: format!("Exec '{}'（超时）", first_line(command)),
@@ -254,7 +270,7 @@ pub fn run_script(root: &Path, args: &Value) -> Result<ToolOutput, String> {
         }
     };
 
-    let raw_output = collect_output(child);
+    let raw_output = drain.join();
     let (out, truncated) = truncate_output(&raw_output, MAX_OUTPUT);
     let body = if out.trim().is_empty() {
         "（命令无输出）".to_string()
@@ -326,33 +342,69 @@ fn first_line(command: &str) -> String {
     }
 }
 
-/// 读取子进程的全部输出（stdout + stderr 合并）。
+/// 单条管道最多保留的字节数。
 ///
-/// 必须在子进程**已退出**后调用，否则 `wait_with_output` 会再次等待。
-fn collect_output(mut child: std::process::Child) -> String {
-    let mut buf = String::new();
-    if let Some(mut out) = child.stdout.take() {
-        use std::io::Read;
-        let mut raw = Vec::new();
-        let _ = out.read_to_end(&mut raw);
-        let text = decode_bytes(&raw);
-        if !text.trim().is_empty() {
-            buf.push_str(&text);
+/// 超过部分**丢弃但继续读到 EOF** —— 必须排空管道，否则子进程会再次阻塞在
+/// `write()` 上，最终走超时分支。已有 [`MAX_OUTPUT`] 的头尾截断兜底，
+/// 这里只是防止异常输出把内存吃光。
+const MAX_PIPE_BYTES: usize = 8 * 1024 * 1024;
+
+/// 后台读取子进程的 stdout / stderr，直到 EOF。
+///
+/// **必须在等待子进程退出之前启动**，否则管道写满会造成互等死锁，
+/// 详见 [`run_script`] 里的说明。
+struct PipeDrain {
+    out: Option<std::thread::JoinHandle<Vec<u8>>>,
+    err: Option<std::thread::JoinHandle<Vec<u8>>>,
+}
+
+impl PipeDrain {
+    /// 接管子进程的两条管道并起线程持续读取。
+    fn attach(child: &mut std::process::Child) -> Self {
+        Self {
+            out: child.stdout.take().map(|p| std::thread::spawn(move || read_capped(p))),
+            err: child.stderr.take().map(|p| std::thread::spawn(move || read_capped(p))),
         }
     }
-    if let Some(mut err) = child.stderr.take() {
-        use std::io::Read;
-        let mut raw = Vec::new();
-        let _ = err.read_to_end(&mut raw);
-        let text = decode_bytes(&raw);
-        if !text.trim().is_empty() {
+
+    /// 等两个读取线程结束，按 stdout → stderr 顺序合并解码。
+    ///
+    /// 子进程退出后写端全部关闭，读取线程会自然收到 EOF，因此即便走了
+    /// 超时分支（先 `kill` 再 `wait`）也不会卡在 `join` 上。
+    fn join(self) -> String {
+        let mut buf = String::new();
+        for handle in [self.out, self.err].into_iter().flatten() {
+            // 读取线程 panic 不应让整条工具调用失败，跳过该路输出即可
+            let Ok(raw) = handle.join() else { continue };
+            let text = decode_bytes(&raw);
+            if text.trim().is_empty() {
+                continue;
+            }
             if !buf.is_empty() {
                 buf.push('\n');
             }
             buf.push_str(&text);
         }
+        buf
     }
-    buf
+}
+
+/// 读到 EOF 为止，但只保留前 [`MAX_PIPE_BYTES`] 字节。
+fn read_capped<R: std::io::Read>(mut r: R) -> Vec<u8> {
+    let mut kept: Vec<u8> = Vec::new();
+    let mut chunk = [0u8; 8192];
+    loop {
+        match r.read(&mut chunk) {
+            Ok(0) | Err(_) => break,
+            Ok(n) => {
+                if kept.len() < MAX_PIPE_BYTES {
+                    let room = MAX_PIPE_BYTES - kept.len();
+                    kept.extend_from_slice(&chunk[..n.min(room)]);
+                }
+            }
+        }
+    }
+    kept
 }
 
 #[cfg(test)]
@@ -409,6 +461,104 @@ mod tests {
                 ok
             );
         }
+    }
+
+    // ---- 管道死锁回归（v0.5.1）----
+
+    /// 生成约 52KB 输出的**单行**命令，不依赖外部工具、不写任何文件。
+    ///
+    /// 行宽取 64 字符 × 800 行。管道缓冲区只有几 KB，52KB 已足够跨过
+    /// 死锁阈值，不必堆到 128KB——那只会让本套件白等好几秒。
+    /// 末行用 `if` 判断输出标记，使整条命令只有一个逻辑行：
+    /// `cmd /C %AURA_CMD%` 只执行第一行（见下方「多行命令」测试），
+    /// 标记若另起一行根本不会被执行，测试就会得到假阴性。
+    #[cfg(windows)]
+    fn big_output_command() -> String {
+        let pad = "A".repeat(64);
+        format!(
+            "for /L %i in (1,1,800) do @if %i==800 (echo AURA_TAIL_MARKER) else (echo {pad})"
+        )
+    }
+
+    /// 大输出命令必须在超时前正常结束，且截断后**保留尾部**。
+    ///
+    /// 三件事一次验完，因为它们共用同一条命令：
+    /// 1. **不死锁** —— 修复前子进程写满管道后阻塞在 `write()`，父进程空转到
+    ///    超时，走「已终止」分支；现在必须拿到退出码 0。
+    /// 2. **触发截断** —— 52KB 远超 MAX_OUTPUT(5000 字符)。
+    /// 3. **尾部保留** —— 编译错误常出现在输出中后段，头尾截断的语义一旦
+    ///    被改坏，模型会看不到真正的报错位置。
+    #[cfg(windows)]
+    #[test]
+    fn run_script_handles_large_output_without_deadlock() {
+        let args = serde_json::json!({
+            "command": big_output_command(),
+            "timeout_ms": 20_000,
+        });
+        let out = run_script(std::path::Path::new("."), &args).expect("命令应正常完成");
+
+        assert!(
+            out.result.contains("退出码 0"),
+            "大输出命令应在超时前正常结束（修复前会卡到超时），实际返回：{}",
+            &out.result[..out.result.len().min(300)]
+        );
+        assert!(
+            out.result.contains("输出已截断"),
+            "52KB 输出应触发截断，实际返回：{}",
+            &out.result[..out.result.len().min(200)]
+        );
+        assert!(
+            out.result.contains("AURA_TAIL_MARKER"),
+            "截断后必须保留尾部标记，否则模型看不到最后的输出"
+        );
+    }
+
+    /// 超时分支下管道同样要能被抽干：`join` 不能卡死。
+    #[cfg(windows)]
+    #[test]
+    fn run_script_timeout_still_returns_partial_output() {
+        // ping 逐秒输出一行，共约 29 秒，必然触发超时；
+        // 输出写向 stdout 而非 nul，确保「部分输出」确有内容可回填
+        let args = serde_json::json!({
+            "command": "ping -n 30 127.0.0.1",
+            "timeout_ms": 2_500,
+        });
+        let out = run_script(std::path::Path::new("."), &args).expect("超时应作为正常结果返回");
+
+        assert!(
+            out.result.contains("超时"),
+            "应返回超时提示，实际：{}",
+            &out.result[..out.result.len().min(200)]
+        );
+        assert!(
+            out.result.contains("部分输出"),
+            "超时应回填已产生的部分输出，而不是空白"
+        );
+        assert!(
+            out.result.contains("127.0.0.1"),
+            "kill 前已产生的 ping 输出应被抽干并回填"
+        );
+    }
+
+    /// 记录一个既有行为：`cmd /C %AURA_CMD%` **只执行第一行**。
+    ///
+    /// 这不是缺陷而是防线——模型若输出「无害命令换行破坏性命令」，
+    /// 第二行不会被执行（黑名单那边还额外把 `\n` 归一为空格，拦得更严）。
+    /// 但模型不知道这件事，因此提示词需引导命令写成单行。
+    #[cfg(windows)]
+    #[test]
+    fn only_first_line_of_multiline_command_runs() {
+        let args = serde_json::json!({ "command": "echo FIRST_LINE\necho SECOND_LINE" });
+        let out = run_script(std::path::Path::new("."), &args).unwrap();
+
+        assert!(
+            out.result.contains("FIRST_LINE"),
+            "第一行应被执行"
+        );
+        assert!(
+            !out.result.contains("SECOND_LINE"),
+            "多行命令的后续行不会执行——模型输出多行命令时会静默丢失"
+        );
     }
 
     #[test]
