@@ -1,8 +1,14 @@
+import { memo } from "react";
 import { useStore, type Block } from "../store";
 import { ActionRow, ErrorRow, NoticeRow } from "./ActionRow";
 import Markdown from "./Markdown";
 
-function UserBubble({ content }: { content: string }) {
+// 以下两个组件必须 memo：store 的打字机每 30ms 触发一次 setState，
+// 消息流里的每一条都会跟着重新 render。而 store 的 appendBlocks
+// 对「非当前消息」保持对象引用不变（只 map 出新的顶层数组），
+// 因此浅比较能拦住历史消息——连带其中的 Markdown 不会被重新解析。
+// 没有 memo 时，长对话里历史越久、流式输出时越卡：任务越长越慢。
+const UserBubble = memo(function UserBubble({ content }: { content: string }) {
   return (
     <div className="flex justify-end">
       <div className="max-w-[75%] whitespace-pre-wrap break-words rounded-card bg-bubble px-4 py-3 text-[15px] leading-relaxed">
@@ -10,7 +16,7 @@ function UserBubble({ content }: { content: string }) {
       </div>
     </div>
   );
-}
+});
 
 function renderBlock(block: Block, i: number) {
   switch (block.kind) {
@@ -32,7 +38,13 @@ function renderBlock(block: Block, i: number) {
   }
 }
 
-function AssistantMessage({ blocks, pending }: { blocks: Block[]; pending: boolean }) {
+const AssistantMessage = memo(function AssistantMessage({
+  blocks,
+  pending,
+}: {
+  blocks: Block[];
+  pending: boolean;
+}) {
   if (blocks.length === 0) {
     // 仅等待首字期间显示呼吸光标；历史空消息不渲染
     if (!pending) return null;
@@ -43,7 +55,7 @@ function AssistantMessage({ blocks, pending }: { blocks: Block[]; pending: boole
     );
   }
   return <div className="flex flex-col gap-3">{blocks.map(renderBlock)}</div>;
-}
+});
 
 function EmptyState() {
   return (

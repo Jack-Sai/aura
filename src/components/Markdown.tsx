@@ -1,4 +1,4 @@
-import { useCallback } from "react";
+import { memo, useCallback } from "react";
 import ReactMarkdown from "react-markdown";
 import rehypeHighlight from "rehype-highlight";
 import rehypeKatex from "rehype-katex";
@@ -16,7 +16,21 @@ function isExternal(href: string): boolean {
   return /^https?:\/\//i.test(href);
 }
 
-export default function Markdown({ content }: Props) {
+// 这三项必须是模块级常量。在组件体内写字面量会每次 render 都造出新的
+// 数组/对象，让 React.memo 的浅比较恒不相等——memo 形同虚设，
+// 而 react-markdown 的解析（remark 词法分析 + 高亮 + KaTeX）并不便宜。
+// 长对话里每个历史 block 都挂着一个 Markdown，全量重解析会拖垮流式渲染。
+const REMARK_PLUGINS = [remarkGfm, remarkMath];
+const REHYPE_PLUGINS = [rehypeKatex, rehypeHighlight];
+const COMPONENTS = {
+  a: ({ children, href }: { children?: React.ReactNode; href?: string }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+};
+
+const Markdown = memo(function Markdown({ content }: Props) {
   /**
    * 模型输出里的链接一律用系统浏览器打开，绝不让 WebView 跟随导航。
    *
@@ -37,18 +51,14 @@ export default function Markdown({ content }: Props) {
   return (
     <div className="md" onClick={handleClick}>
       <ReactMarkdown
-        remarkPlugins={[remarkGfm, remarkMath]}
-        rehypePlugins={[rehypeKatex, rehypeHighlight]}
-        components={{
-          a: ({ children, href }) => (
-            <a href={href} target="_blank" rel="noopener noreferrer">
-              {children}
-            </a>
-          ),
-        }}
+        remarkPlugins={REMARK_PLUGINS}
+        rehypePlugins={REHYPE_PLUGINS}
+        components={COMPONENTS}
       >
         {content}
       </ReactMarkdown>
     </div>
   );
-}
+});
+
+export default Markdown;
