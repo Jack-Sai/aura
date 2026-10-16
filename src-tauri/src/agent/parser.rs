@@ -434,6 +434,42 @@ mod tests {
     }
 
     #[test]
+    fn multiple_tool_calls_in_one_stream() {
+        // v0.5.3 合批执行的**前提**：runner 收到第一个 `<tool>` 后不再 break，
+        // 改为收集本轮的全部调用依次执行。若这里切不出多个 Event::Tool，
+        // 合批会完全失效——表现是模型明明写了 3 个工具，只执行了第 1 个，
+        // 而 runner 侧没有任何报错。
+        let (events, _) = feed_all(&[
+            "先读三个文件。",
+            "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"a.rs\"}}</tool>",
+            "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"b.rs\"}}</tool>",
+            "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"c.rs\"}}</tool>",
+        ]);
+        let tools: Vec<&Event> = events.iter().filter(|e| matches!(e, Event::Tool(_))).collect();
+        assert_eq!(tools.len(), 3, "一轮内的多个工具调用必须全部切出来");
+        // 顺序必须与写出的顺序一致——执行阶段依赖它来回填对结果
+        assert!(matches!(tools[0], Event::Tool(t) if t.contains("a.rs")));
+        assert!(matches!(tools[1], Event::Tool(t) if t.contains("b.rs")));
+        assert!(matches!(tools[2], Event::Tool(t) if t.contains("c.rs")));
+        // 前置思考文本仍应作为正文产出，不能被工具调用吞掉
+        assert!(events
+            .iter()
+            .any(|e| matches!(e, Event::Chunk(t) if t.contains("先读三个文件"))));
+    }
+
+    #[test]
+    fn tool_then_text_then_tool_is_still_all_collected() {
+        // 模型在两次工具调用之间插话时，两个调用都要保住
+        let (events, _) = feed_all(&[
+            "<tool>{\"name\":\"list_files\",\"args\":{}}</tool>",
+            "好的，接着看第二个",
+            "<tool>{\"name\":\"read_file\",\"args\":{\"path\":\"a.rs\"}}</tool>",
+        ]);
+        let tools: Vec<&Event> = events.iter().filter(|e| matches!(e, Event::Tool(_))).collect();
+        assert_eq!(tools.len(), 2, "夹在中间的文本不应中断后续工具的收集");
+    }
+
+    #[test]
     fn todo_update_split_across_chunks() {
         let (events, _) = feed_all(&["<todo_up", "date>{\"id\":\"s1\"}</todo_", "update>尾"]);
         assert!(matches!(&events[0], Event::TodoUpdate(t) if t == "{\"id\":\"s1\"}"));

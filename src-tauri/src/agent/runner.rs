@@ -49,20 +49,79 @@ const MAX_PARSE_RETRIES_SMALL: u32 = 1;
 /// TCP 层很快就会断开，不会占用这么久。
 const STREAM_IDLE_TIMEOUT: Duration = Duration::from_secs(90);
 
+/// 单轮内最多接受多少个工具调用（v0.5.3）。
+///
+/// 模型一轮给出多个 `<tool>` 是现在推荐的写法（它们会**依次**执行，
+/// 存在前后依赖也能放在同一轮），但仍需设上限兜底：一次甩出几十个调用
+/// 会让节流计数失去意义，并把大量结果一次性塞进历史挤占上下文。
+/// 超出上限的调用会被丢弃，模型看到结果数少于自己发出的调用数时会自行分批。
+const MAX_TOOLS_PER_TURN: usize = 8;
+
 /// 连续调用节流键：工具名 + 作用目标。
 ///
 /// 仅按工具名计数会误伤合法的批量修改——例如连续 10 次改同一个文件，
 /// 按名字计数会在第 6 次被无端拦截。加上目标后，「改 A 文件」与
 /// 「改 B 文件」互不干扰，而对同一文件反复死循环仍会被拦。
 fn throttle_key(name: &str, args: &Value) -> String {
-    let target = args
-        .get("path")
+    let target = tool_target(name, args);
+    if target.is_empty() {
+        format!("{}|*", name)
+    } else {
+        format!("{}|{}", name, target)
+    }
+}
+
+/// 从调用参数里提取一个短且可读的作用目标，用于节流键与回填标签。
+///
+/// 只有 `path` 参与节流判定（改动不同文件本就该放行）；
+/// 命令与检索词本身没有可寻址的资源，提取出来只用于展示，
+/// 因此 `throttle_key` 拿到它们时仍应回落到 `*`。
+fn tool_target(name: &str, args: &Value) -> String {
+    args.get("path")
         .and_then(|v| v.as_str())
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .unwrap_or_else(|| "*".to_string());
-    format!("{}|{}", name, target)
+        .map(|s| s.chars().take(60).collect())
+        .unwrap_or_else(|| {
+            if name.starts_with("run_script") {
+                args.get("command")
+                    .and_then(|v| v.as_str())
+                    .map(|c| {
+                        c.lines()
+                            .next()
+                            .unwrap_or("")
+                            .trim()
+                            .chars()
+                            .take(40)
+                            .collect()
+                    })
+                    .unwrap_or_default()
+            } else {
+                args.get("query")
+                    .and_then(|v| v.as_str())
+                    .map(|q| q.chars().take(40).collect())
+                    .unwrap_or_default()
+            }
+        })
+}
+
+/// 生成一条带标识的 `<tool_result>`。
+///
+/// **必须带 `name`**：一轮里可能同时回填多个结果，模型要能分辨
+/// 哪个结果对应哪个调用——否则某个失败时它会重试整批。
+/// 即便一轮只有一个工具，这个标识同样有用：失败信息能明确指向具体调用。
+fn tool_result_tag(name: &str, args: &Value, body: &str) -> String {
+    let target = tool_target(name, args);
+    if target.is_empty() {
+        format!("<tool_result name=\"{}\">{}</tool_result>", name, body)
+    } else {
+        format!(
+            "<tool_result name=\"{}\" target=\"{}\">{}</tool_result>",
+            name,
+            target.replace('"', "'"),
+            body
+        )
+    }
 }
 
 /// 工具拒绝计数：按工具名独立统计。
@@ -270,15 +329,6 @@ fn is_known_tool(name: &str) -> bool {
     crate::tools::is_known(&normalize_tool_name(name))
 }
 
-/// 从被拒的原文里取出工具名，用于按工具分别计数。
-///
-/// 拒绝发生在 `parse_tool_call` 之后，因此原文里必然有一份可解析的
-/// 工具调用；解析不出来时返回 `None`，由调用方归入「unknown」桶。
-fn rejected_tool_name(turn_output: &str) -> Option<String> {
-    let raw = turn_output.rsplit_once("<tool>")?.1.split_once("</tool>")?.0;
-    parse_tool_call(raw).ok().map(|(name, _)| normalize_tool_name(&name))
-}
-
 /// 处理模型产出的 `<todo_plan>`：解析、落库、推送前端。
 ///
 /// 解析失败不打断本轮对话——用户仍应看到模型的文字说明，
@@ -413,7 +463,11 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
         .push(json!({ "role": "user", "content": user_message }));
     let mut parse_failures: u32 = 0;
         let mut rejects = RejectCounter::default();
-    let mut consecutive: Option<(String, usize)> = None;
+    // v0.5.3：原先只记「上一个工具」的键+次数，一轮里给出多个工具时会互相
+    // 覆盖——第二个把第一个的记录冲掉，第三个又覆盖第二个，节流形同虚设。
+    // 改为按 throttle_key 分别累计。
+    let mut consecutive: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::new();
     let mut rounds = 0usize;
 
     loop {
@@ -527,7 +581,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
 
         let mut parser = Parser::new();
         let mut turn_output = String::new();
-        let mut tool_json: Option<String> = None;
+        let mut tool_jsons: Vec<String> = Vec::new();
         let mut answered = false;
         let mut stream_err: Option<String> = None;
 
@@ -565,8 +619,15 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                             Event::Tool(json_str) => {
                                 turn_output
                                     .push_str(&format!("<tool>{}</tool>", json_str));
-                                tool_json = Some(json_str);
-                                break 'stream;
+                                // v0.5.3：**不打断流**，继续收集本轮的其余工具。
+                                // 原先遇到第一个就 break，改 10 个文件就要 10 次
+                                // 完整 LLM 往返；合批后一次往返即可，执行阶段
+                                // 按写出的顺序依次跑，依赖关系天然满足。
+                                // 收集到上限后仍继续消费流，但不再多收，
+                                // 避免模型甩出几十个调用挤占上下文。
+                                if tool_jsons.len() < MAX_TOOLS_PER_TURN {
+                                    tool_jsons.push(json_str);
+                                }
                             }
                             Event::AnswerDone => {
                                 turn_output.push_str("</answer>");
@@ -634,7 +695,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             return Ok(());
         }
 
-        if tool_json.is_none() {
+        if tool_jsons.is_empty() {
             let mut tail = Vec::new();
             let finish = parser.finish(&mut tail);
             for ev in tail {
@@ -645,7 +706,9 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     }
                     Event::Tool(json_str) => {
                         turn_output.push_str(&format!("<tool>{}</tool>", json_str));
-                        tool_json = Some(json_str);
+                        if tool_jsons.len() < MAX_TOOLS_PER_TURN {
+                            tool_jsons.push(json_str);
+                        }
                     }
                     Event::AnswerDone => {
                         turn_output.push_str("</answer>");
@@ -668,7 +731,7 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                 emit_done(ctx.app, ctx.session_id);
                 return Ok(());
             }
-            if tool_json.is_none() {
+if tool_jsons.is_empty() {
                 // content 为空但模型输出了 reasoning（思考）时，以思考内容兜底
                 if turn_output.is_empty() {
                     let reasoning = stream.take_reasoning();
@@ -720,9 +783,16 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
             }
         }
 
-        let next = {
-            let raw = tool_json.clone().unwrap_or_default();
-            match parse_tool_call(&raw) {
+        // assistant 消息先入历史，与原先「处理前 push」的顺序保持一致；
+        // 本轮全部工具跑完后，再把结果**聚合成一条** user 消息回填，
+        // 保证顺序与模型写出的调用顺序严格对应。
+        push_assistant(ctx.history, &turn_output);
+
+        let mut results: Vec<String> = Vec::new();
+        let mut first_reject_reported = false;
+
+        for raw_json in &tool_jsons {
+            let next = match parse_tool_call(raw_json) {
                 Ok((name, args)) => {
                     let norm = normalize_tool_name(&name);
                     match tool_permitted(ctx.mode, &norm) {
@@ -731,129 +801,131 @@ pub async fn run_turn(ctx: &mut TurnContext<'_>, user_message: &str) -> Result<(
                     }
                 }
                 Err(msg) => Next::Reject(msg),
-            }
-        };
+            };
 
-        match next {
-            Next::Reject(msg) => {
-                push_assistant(ctx.history, &turn_output);
-                // 工具压根没执行成功，不应计入连续调用节流
-                consecutive = None;
-                // 提权为 error 事件：此前是灰色 notice，视觉权重极低，
-                // 用户容易把「工具被拒」误读成「界面卡住没反应」
-                emit_text(
-                    ctx.app,
-                    ctx.session_id,
-                    EV_ERROR,
-                    &format!(
-                        "工具调用无效：{}；原文：{}",
-                        msg,
-                        truncate_tail(&turn_output, 200)
-                    ),
-                );
-                // 按工具名独立计数：交替调用不同工具时无法收敛，
-                // 靠全局计数 + 成功即清零会一直跑到 MAX_TOOL_ROUNDS
-                let rejected = rejected_tool_name(&turn_output)
-                    .unwrap_or_else(|| "unknown".to_string());
-                let exceeded = rejects.record(&rejected, max_parse_retries);
-                // 另一个兜底：全部拒绝次数也超限时终止，防止模型
-                // 轮换大量工具名无限重试
-                let total_exceeded = rejects.total() > max_parse_retries * 4;
-                if exceeded || total_exceeded {
-                    emit_pending_text(ctx.app, ctx.session_id, &turn_output);
-                    emit_text(
-                        ctx.app,
-                        ctx.session_id,
-                        EV_ERROR,
-                        &format!(
-                            "`{rejected}` 连续被拒多次，已停止重试。可以换个说法，\
-                             或切换到执行模式后再试。"
-                        ),
-                    );
-                    emit_done(ctx.app, ctx.session_id);
-                    return Ok(());
+            match next {
+                Next::Reject(msg) => {
+                    // 工具压根没执行成功，不应计入连续调用节流
+                    consecutive.clear();
+                    // 一轮可能有多个调用被拒，但界面只需一次说明，
+                    // 否则会刷出一屏重复的 error
+                    if !first_reject_reported {
+                        first_reject_reported = true;
+                        // 提权为 error 事件：此前是灰色 notice，视觉权重极低，
+                        // 用户容易把「工具被拒」误读成「界面卡住没反应」
+                        emit_text(
+                            ctx.app,
+                            ctx.session_id,
+                            EV_ERROR,
+                            &format!(
+                                "工具调用无效：{}；原文：{}",
+                                msg,
+                                truncate_tail(&turn_output, 200)
+                            ),
+                        );
+                    }
+                    // 按工具名独立计数：交替调用不同工具时无法收敛，
+                    // 靠全局计数 + 成功即清零会一直跑到 MAX_TOOL_ROUNDS
+                    let rejected = parse_tool_call(raw_json)
+                        .map(|(name, _)| normalize_tool_name(&name))
+                        .unwrap_or_else(|_| "unknown".to_string());
+                    let exceeded = rejects.record(&rejected, max_parse_retries);
+                    // 另一个兜底：全部拒绝次数也超限时终止，防止模型
+                    // 轮换大量工具名无限重试
+                    let total_exceeded = rejects.total() > max_parse_retries * 4;
+                    if exceeded || total_exceeded {
+                        emit_pending_text(ctx.app, ctx.session_id, &turn_output);
+                        emit_text(
+                            ctx.app,
+                            ctx.session_id,
+                            EV_ERROR,
+                            &format!(
+                                "`{rejected}` 连续被拒多次，已停止重试。可以换个说法，\
+                                 或切换到执行模式后再试。"
+                            ),
+                        );
+                        emit_done(ctx.app, ctx.session_id);
+                        // 已产生的结果仍然回填，让模型知道自己错在哪
+                        ctx.history.push(json!({ "role": "user", "content": results.join("\n") }));
+                        return Ok(());
+                    }
+                    results.push(tool_result_tag(&rejected, &json!({}), &format!("Error: {}", msg)));
                 }
-                ctx.history.push(json!({
-                    "role": "user",
-                    "content": format!("<tool_result>Error: {}</tool_result>", msg)
-                }));
-                continue;
-            }
-            Next::Tool(name, args) => {
-                push_assistant(ctx.history, &turn_output);
-                // 该工具已成功放行，清掉它的拒绝计数，
-                // 让「换个工具再试」不会继承旧账
-                rejects.reset(&name);
+                Next::Tool(name, args) => {
+                    // 该工具已成功放行，清掉它的拒绝计数，
+                    // 让「换个工具再试」不会继承旧账
+                    rejects.reset(&name);
 
-                let tool_label = tools::tool_label(&name, &args);
-                // 节流按「工具 + 目标」计数，并使用注册表声明的上限
-                let throttle = throttle_key(&name, &args);
-                let limit = tools::registry::max_consecutive(&name);
-                let over_limit = matches!(
-                    &consecutive,
-                    Some((prev, count)) if *prev == throttle && *count >= limit as usize
-                );
-                consecutive = match consecutive {
-                    Some((prev, count)) if prev == throttle => {
-                        Some((throttle, count + 1))
-                    }
-                    _ => Some((throttle, 1)),
-                };
+                    let tool_label = tools::tool_label(&name, &args);
+                    // 节流按「工具 + 目标」计数，并使用注册表声明的上限。
+                    // 一轮多个工具时各自独立累计，不会互相覆盖。
+                    let throttle = throttle_key(&name, &args);
+                    let limit = tools::registry::max_consecutive(&name);
+                    let seen = consecutive.get(&throttle).copied().unwrap_or(0);
+                    let over_limit = seen >= limit as usize;
+                    consecutive.insert(throttle, seen + 1);
 
-                let body = if over_limit {
-                    emit_action_detail(
-                        ctx.app,
-                        ctx.session_id,
-                        &format!("{}（连续调用超限）", tool_label),
-                        false,
-                        None,
-                    );
-                    "Error: 连续调用次数超限，请尝试其他工具或基于现有信息直接回复。"
-                        .to_string()
-                } else {
-                    match tools::execute(
-                        ctx.workspace.to_path_buf(),
-                        name.clone(),
-                        args.clone(),
-                    )
-                    .await
-                    {
-                        Ok(out) => {
-                            // Exec 类工具的结果是命令输出，交给前端折叠展示
-                            let detail = if name.starts_with("run_script") {
-                                Some(out.result.clone())
-                            } else {
-                                None
-                            };
-                            emit_action_detail(
-                                ctx.app,
-                                ctx.session_id,
-                                &out.label,
-                                true,
-                                detail,
-                            );
-                            out.result
+                    let body = if over_limit {
+                        emit_action_detail(
+                            ctx.app,
+                            ctx.session_id,
+                            &format!("{}（连续调用超限）", tool_label),
+                            false,
+                            None,
+                        );
+                        "Error: 连续调用次数超限，请尝试其他工具或基于现有信息直接回复。"
+                            .to_string()
+                    } else {
+                        match tools::execute(
+                            ctx.workspace.to_path_buf(),
+                            name.clone(),
+                            args.clone(),
+                        )
+                        .await
+                        {
+                            Ok(out) => {
+                                // Exec 类工具的结果是命令输出，交给前端折叠展示
+                                let detail = if name.starts_with("run_script") {
+                                    Some(out.result.clone())
+                                } else {
+                                    None
+                                };
+                                emit_action_detail(
+                                    ctx.app,
+                                    ctx.session_id,
+                                    &out.label,
+                                    true,
+                                    detail,
+                                );
+                                out.result
+                            }
+                            Err(fail) => {
+                                // 失败信息始终附带，便于用户看清原因
+                                emit_action_detail(
+                                    ctx.app,
+                                    ctx.session_id,
+                                    &fail.label,
+                                    false,
+                                    Some(fail.error.clone()),
+                                );
+                                format!("Error: {}", fail.error)
+                            }
                         }
-                        Err(fail) => {
-                            // 失败信息始终附带，便于用户看清原因
-                            emit_action_detail(
-                                ctx.app,
-                                ctx.session_id,
-                                &fail.label,
-                                false,
-                                Some(fail.error.clone()),
-                            );
-                            format!("Error: {}", fail.error)
-                        }
-                    }
-                };
-                ctx.history.push(json!({
-                    "role": "user",
-                    "content": format!("<tool_result>{}</tool_result>", body)
-                }));
-                continue;
+                    };
+                    results.push(tool_result_tag(&name, &args, &body));
+                }
             }
         }
+
+        ctx.history.push(json!({
+            "role": "user",
+            "content": if results.is_empty() {
+                "<tool_result>Error: 本轮没有任何可执行的工具调用</tool_result>".to_string()
+            } else {
+                results.join("\n")
+            }
+        }));
+        continue;
     }
 }
 
@@ -939,12 +1011,54 @@ mod tests {
         assert!(c.total() > 12, "总计数应能识别轮换工具名的重试");
     }
 
+    // ---- v0.5.3：合批执行 ----
+
+    /// 一轮多个工具时，回填必须逐条带上标识。
+    ///
+    /// 不带 name 时模型无法分辨哪个结果对应哪个调用——某个失败时它会重试整批。
+    /// 单工具场景同样需要：失败信息能明确指向具体调用。
     #[test]
-    fn rejected_tool_name_extracts_from_turn_output() {
-        let out = "先看看文件。\n<tool>{\"name\":\"Write-File\",\"args\":{}}</tool>";
-        assert_eq!(rejected_tool_name(out).as_deref(), Some("write_file"));
-        // 没有工具调用时归入 unknown 桶
-        assert_eq!(rejected_tool_name("只是文本"), None);
+    fn tool_result_tag_carries_identity() {
+        let args = json!({ "path": "src/main.rs" });
+        let tag = tool_result_tag("read_file", &args, "内容");
+        assert!(tag.contains("name=\"read_file\""), "缺少工具名: {}", tag);
+        assert!(tag.contains("target=\"src/main.rs\""), "缺少作用目标: {}", tag);
+        assert!(tag.contains(">内容"), "缺少结果体: {}", tag);
+
+        // 无可寻址参数时只带 name
+        let tag = tool_result_tag("search_workspace", &json!({}), "片段");
+        assert!(tag.contains("name=\"search_workspace\""));
+        assert!(!tag.contains("target="), "无目标时不应输出空 target: {}", tag);
+    }
+
+    /// 命令与检索词也要能提取目标，否则回填里只有工具名，模型难以分辨。
+    #[test]
+    fn tool_target_reads_command_and_query() {
+        let cmd = json!({ "command": "cargo build\n--release" });
+        assert_eq!(tool_target("run_script", &cmd), "cargo build");
+
+        let q = json!({ "query": "连接池" });
+        assert_eq!(tool_target("search_workspace", &q), "连接池");
+    }
+
+    /// 节流键：同工具不同目标互不干扰，同目标持续累积。
+    ///
+    /// 一轮给出多个工具时这条尤其关键——原先的「只记上一个」实现会互相覆盖。
+    #[test]
+    fn throttle_key_isolates_targets() {
+        let a = throttle_key("write_file", &json!({ "path": "a.rs" }));
+        let b = throttle_key("write_file", &json!({ "path": "b.rs" }));
+        let a_again = throttle_key("write_file", &json!({ "path": "a.rs" }));
+        assert_ne!(a, b, "不同目标不应共用节流计数");
+        assert_eq!(a, a_again, "同一目标必须共用节流计数");
+
+        // 无 path 的工具改用命令/检索词区分目标（同上）
+        assert_ne!(
+            throttle_key("run_script", &json!({ "command": "ls" })),
+            throttle_key("run_script", &json!({ "command": "pwd" }))
+        );
+        // 完全取不到参数时回落 *
+        assert_eq!(throttle_key("list_files", &json!({})), "list_files|*");
     }
 
     // ---- 中断收尾：补发已生成正文 ----
@@ -1154,10 +1268,27 @@ mod tests {
             throttle_key("write_file", &json!({ "path": "a.txt" })),
             throttle_key("read_file", &json!({ "path": "a.txt" }))
         );
-        // 无 path 参数（如 search_workspace）归入通配目标
-        let s1 = throttle_key("search_workspace", &json!({ "query": "x" }));
-        let s2 = throttle_key("search_workspace", &json!({ "query": "y" }));
-        assert_eq!(s1, s2);
+        // v0.5.3：无 path 的工具改用命令/检索词作为目标。
+        // 原先一律归入通配 `*`，于是 Build 模式连续执行 6 条**不同**命令
+        // （build、test、lint…）就会因累计到 EXEC_LIMIT 被误判成「连续调用超限」，
+        // 而它们之间毫无重复可言。
+        assert_ne!(
+            throttle_key("search_workspace", &json!({ "query": "x" })),
+            throttle_key("search_workspace", &json!({ "query": "y" })),
+            "不同检索词不该共用节流计数"
+        );
+        assert_ne!(
+            throttle_key("run_script", &json!({ "command": "cargo build" })),
+            throttle_key("run_script", &json!({ "command": "cargo test" })),
+            "不同命令不该共用节流计数"
+        );
+        // 但同一条命令重复调用仍会被正常拦下
+        assert_eq!(
+            throttle_key("run_script", &json!({ "command": "cargo build" })),
+            throttle_key("run_script", &json!({ "command": "cargo build" }))
+        );
+        // 完全取不到参数时才回落通配
+        assert_eq!(throttle_key("list_files", &json!({})), "list_files|*");
     }
 
     #[test]

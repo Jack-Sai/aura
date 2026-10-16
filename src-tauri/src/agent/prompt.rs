@@ -23,7 +23,12 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str, mode: Mode) -> S
     p.push_str(
         "\n# 输出规则\n\
          - 可以先输出普通文本作为思考过程，无需任何标签。\n\
-         - 一次只调用一个工具；收到工具结果后继续思考或作答。\n\
+         - 一轮内可以给出多个工具调用，它们会**按你写出的顺序依次执行**，\
+         执行完后一次性收到全部结果。\n\
+         - 存在前后依赖的调用（例如先改文件再运行构建）也可以放在同一轮，\
+         无需自行分批——顺序执行天然保证了依赖。\n\
+         - 每个调用单独写成 <tool>{\"name\": ..., \"args\": {...}}</tool>，可连续给出多个。\n\
+         - 每条工具结果都会带上 name 与 target，据此判断是哪个调用的返回。\n\
          - 任务完成后输出 <answer>最终答案</answer>。一旦输出 <answer>，任务即结束；\
          答案应完整、可直接使用，并用 Markdown 排版。\n\
          - 即使没有调用任何工具，最终回答也必须用 <answer></answer> 包裹，\
@@ -42,7 +47,8 @@ pub fn build_system_prompt(workspace: &str, global_rules: &str, mode: Mode) -> S
              - 成块替换一段代码时用 replace_lines，new_content 必须是该区间的完整新文本。\n\
              - string_replace 的 old_string 必须与文件内容完全一致（含缩进与空格）；\
              报「未找到」时先重新 read_file 对照，不要反复重试同样的参数。\n\
-             - 一次工具调用只改一个文件，改完确认结果再改下一个。\n\
+             - 一次工具调用只改一个文件；需要改多个文件时，\
+             写成多个工具调用依次给出，系统会按顺序执行。\n\
              - 写工具只会返回写入摘要而非文件内容；需要确认改对了什么，再 read_file 查看。\n",
         );
     }
@@ -137,6 +143,9 @@ pub fn build_compact_system_prompt(workspace: &str, global_rules: &str) -> Strin
 
     p.push_str(
         "工具调用格式：<tool>{\"name\": \"工具名\", \"args\": {...}}</tool>\n\
+         一轮内可连续给出多个工具调用，系统会按写出的顺序依次执行，\
+         随后一次性返回全部结果。\n\
+         每条结果都带 name，可据此判断是哪个调用的返回。\n\
          最终回答用 <answer>...</answer> 包裹。\n\
          路径用 /，以 / 开头表示工作区根目录，禁 ..。\n",
     );
