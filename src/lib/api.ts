@@ -32,8 +32,14 @@ export function sendMessage(
   return invoke("send_message", { sessionId, message, mode });
 }
 
-export function stopMessage(): Promise<void> {
-  return invoke("stop_message");
+/**
+ * 中断当前正在执行的流。
+ *
+ * 必须带 `sessionId`：后端会校验归属，传别的会话会被忽略——
+ * 否则切到别的会话点「停止」会把这边正在跑的任务停掉。
+ */
+export function stopMessage(sessionId: string): Promise<void> {
+  return invoke("stop_message", { sessionId });
 }
 
 export function removeSession(sessionId: string): Promise<void> {

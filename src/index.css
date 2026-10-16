@@ -340,12 +340,41 @@
     padding: 0.1em 0.35em;
   }
 
+  /* 代码块容器：负责把语言标签绝对定位到右上角，
+     padding-top 留出标签的净空，避免压住首行代码 */
+  .md .md-code {
+    position: relative;
+    margin-top: 0.25rem;
+    margin-bottom: 0.25rem;
+  }
+
+  .md .md-code-lang {
+    position: absolute;
+    top: 0.45rem;
+    right: 0.7rem;
+    z-index: 1;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    line-height: 1;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--subtle);
+    pointer-events: none;
+    user-select: none;
+  }
+
   .md pre {
     background-color: var(--surface-sunken);
     border: 1px solid var(--line);
     border-radius: 0.75rem;
     padding: 0.9rem 1rem;
     overflow-x: auto;
+    margin: 0;
+  }
+
+  /* 有语言标签时，首行代码下压一点让位 */
+  .md .md-code:has(.md-code-lang) pre {
+    padding-top: 1.6rem;
   }
 
   .md pre code {

@@ -143,7 +143,7 @@ export default function TodoPanel({
                     type="button"
                     aria-label={`删除步骤：${t.title}`}
                     onClick={() => onDeleteStep(t.id)}
-                    className="shrink-0 rounded p-0.5 text-subtle opacity-0 transition-opacity hover:text-error focus-visible:opacity-100 group-hover:opacity-100"
+                    className="shrink-0 rounded p-0.5 text-subtle opacity-0 transition-opacity hover:text-danger focus-visible:opacity-100 group-hover:opacity-100"
                   >
                     <Trash2 size={11} aria-hidden />
                   </button>

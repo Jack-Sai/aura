@@ -35,7 +35,12 @@ pub struct AppState {
     pub sessions: AsyncMutex<HashMap<String, Session>>,
     pub workspace: Mutex<PathBuf>,
     pub global_rules: Mutex<String>,
+    /// 取消标志本身是全局的（同时只跑一个流），但**归属**由
+    /// [`Self::running`] 校验。没有它的话，切到别的会话点「停止」
+    /// 会把这边正在跑的任务停掉，而用户以为停的是当前会话。
     pub cancelled: AtomicBool,
+    /// 当前正在执行的会话 id。Aura 同时只允许一个流。
+    running: AsyncMutex<Option<String>>,
     pub db: Mutex<Connection>,
 }
 
@@ -103,6 +108,7 @@ impl AppState {
             workspace: Mutex::new(workspace),
             global_rules: Mutex::new(global_rules),
             cancelled: AtomicBool::new(false),
+            running: AsyncMutex::new(None),
             db: Mutex::new(db),
         }
     }
@@ -129,6 +135,19 @@ pub async fn send_message(
     }
     // 每次发送时采用当前模式；缺省或无法识别时回落 Chat
     let mode = Mode::parse(mode.as_deref().unwrap_or_default());
+    // 同时只允许一个流。与前端 `if (busy) return` 对齐的双保险：
+    // 前端那层只挡 UI 误触，这里才是真正的约束——否则两次 send_message
+    // 会互相把 `cancelled` 重置成 false，先跑的那个再也停不下来。
+    {
+        let mut running = state.running.lock().await;
+        match running.as_deref() {
+            Some(who) if who != session_id => {
+                return Err("已有任务正在执行，请等待完成或先停止当前任务".into());
+            }
+            Some(_) => return Err("该会话已有任务正在执行".into()),
+            None => *running = Some(session_id.clone()),
+        }
+    }
     state.cancelled.store(false, Ordering::Relaxed);
     let workspace = state.workspace.lock().map_err(lock_err)?.clone();
     let global_rules = state.global_rules.lock().map_err(lock_err)?.clone();
@@ -180,12 +199,24 @@ pub async fn send_message(
     if let Ok(db) = state.db.lock() {
         let _ = db::save_history(&db, &session_id, &session.history, session.model_idx);
     }
+    // 释放执行权必须在保存历史之后，否则刚结束的流可能被紧随其后的
+    // 新请求抢跑，而旧流还没落盘
+    *state.running.lock().await = None;
     result
 }
 
 #[tauri::command]
-pub fn stop_message(state: State<'_, AppState>) {
+pub async fn stop_message(
+    state: State<'_, AppState>,
+    session_id: String,
+) -> Result<(), String> {
+    // 只停自己的会话：否则切到别的会话点「停止」会把这边正在跑的任务停掉
+    let belongs = state.running.lock().await.as_deref() == Some(session_id.as_str());
+    if !belongs {
+        return Ok(());
+    }
     state.cancelled.store(true, Ordering::Relaxed);
+    Ok(())
 }
 
 #[tauri::command]
@@ -700,6 +731,48 @@ pub async fn remove_workspace(
 mod tests {
     use super::*;
     use std::path::Path;
+
+    /// 停止操作的归属判定：只有正在跑的那个会话才能停掉它。
+    ///
+    /// `cancelled` 是全局标志，归属靠 `running` 校验。没有这道闸门，
+    /// 切到别的会话点「停止」会把这边正在跑的任务停掉，而用户以为
+    /// 停的是自己当前看的会话。
+    #[tokio::test]
+    async fn stop_only_affects_the_running_session() {
+        let state = AppState {
+            router: Router::new(crate::api::config::default_config()),
+            sessions: AsyncMutex::new(HashMap::new()),
+            workspace: Mutex::new(PathBuf::from(".")),
+            global_rules: Mutex::new(String::new()),
+            cancelled: AtomicBool::new(false),
+            running: AsyncMutex::new(Some("sess-A".to_string())),
+            db: Mutex::new(db::open(Path::new(":memory:")).unwrap()),
+        };
+
+        // 别的会话发起停止：忽略
+        {
+            let belongs = state.running.lock().await.as_deref() == Some("sess-B");
+            assert!(!belongs, "非运行中的会话不应有停止权");
+        }
+
+        // 正在跑的会话发起停止：置位
+        {
+            let belongs = state.running.lock().await.as_deref() == Some("sess-A");
+            assert!(belongs);
+            state.cancelled.store(true, Ordering::Relaxed);
+        }
+        assert!(state.cancelled.load(Ordering::Relaxed));
+    }
+
+    /// 空闲时任何会话都无权停止——避免「停一个根本没在跑的东西」
+    /// 把下一次发送刚设的标志又弄脏。
+    #[tokio::test]
+    async fn idle_state_ignores_any_stop() {
+        let running: AsyncMutex<Option<String>> = AsyncMutex::new(None);
+        for sid in ["sess-A", "sess-B"] {
+            assert_ne!(running.lock().await.as_deref(), Some(sid));
+        }
+    }
 
     #[test]
     fn parse_pull_line_handles_phases() {

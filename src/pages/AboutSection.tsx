@@ -174,7 +174,7 @@ export default function AboutSection() {
           )}
 
           {state.kind === "error" && (
-            <p className="flex items-start gap-2 text-sm text-error">
+            <p className="flex items-start gap-2 text-sm text-danger">
               <TriangleAlert size={14} className="mt-0.5 shrink-0" />
               <span>安装失败：{state.message}</span>
             </p>

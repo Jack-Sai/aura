@@ -6,7 +6,7 @@
 
 <p align="center">
   <img src="https://img.shields.io/badge/license-Apache--2.0-blue.svg" alt="License" />
-  <img src="https://img.shields.io/badge/version-v0.5.3-blue.svg" alt="Version" />
+  <img src="https://img.shields.io/badge/version-v0.5.1-blue.svg" alt="Version" />
   <img src="https://img.shields.io/badge/platform-Windows-lightgrey.svg" alt="Platform" />
   <img src="https://img.shields.io/badge/Tauri-2.0-orange.svg" alt="Tauri" />
 </p>
@@ -45,9 +45,13 @@
 > **行为变更提醒**
 >
 > - 从 v0.5.0 起：对话模式由全权限改为只读。升级后若希望 Aura 直接修改文件，请将模式切换到「执行」。
-> - 从 v0.5.1 起：修复了执行输出较多的命令（如安装依赖、编译项目）时界面长时间无响应的问题。
-> - 从 v0.5.2 起：长对话中的流式输出更加流畅，历史消息不再被反复重新渲染。
-> - 从 v0.5.3 起：一轮内可以给出多个工具调用并按顺序依次执行，无需再等每个结果返回后才继续。Aura 建议把互不依赖的读取操作合并到同一轮以缩短等待。
+> - v0.5.1：
+>   - 修复执行输出较多的命令（如安装依赖、编译项目）时界面长时间无响应的问题
+>   - 一轮内可以给出多个工具调用并按顺序依次执行，无需再等每个结果返回后才继续
+>   - 修复模型「先说话再调工具」时动作卡片排到正文前面的顺序错乱
+>   - 代码块右上角显示语言标识
+>   - 修复切换会话后点「停止」会停掉其他会话任务的问题
+>   - 修复两处红色警示样式不生效的问题
 
 ## 内置厂商
 

@@ -101,6 +101,15 @@ const StoreContext = createContext<StoreValue | null>(null);
 interface StreamTarget {
   sessionId: string;
   messageId: string;
+  /**
+   * 打字机正在写入的 text block 下标。
+   *
+   * 不能只看「最后一个 block」：模型输出「先说一句」再调工具时，
+   * 动作卡片会在文字**还没被打字机消费**时就插入。若打字机届时才发现
+   * 末块不是 text，就会新开一块——文字被挤到动作卡片**后面**，
+   * 与模型实际输出顺序相反。
+   */
+  textIndex: number;
 }
 
 function createSession(workspace: string): Session {
@@ -130,12 +139,26 @@ function pickSessionInWorkspace(
   return inWs.find((x) => x.messages.length === 0) ?? inWs[0];
 }
 
-function mergeText(blocks: Block[], text: string): Block[] {
-  const last = blocks[blocks.length - 1];
-  if (last && last.kind === "text") {
-    return [...blocks.slice(0, -1), { kind: "text", text: last.text + text }];
+/**
+ * 把一段文本合并到「打字机当前正在写」的 block 上；该位置还不是 text
+ * （尚未写出任何字符，或已被别的 block 占据）就在末尾新建。
+ *
+ * 返回新的下标：调用方要把它写回 [`StreamTarget.textIndex`]，否则后续
+ * 打字机又会去合并到旧位置，文本会跳到 action 卡片前面。
+ */
+export function appendText(
+  blocks: Block[],
+  index: number,
+  text: string,
+): { blocks: Block[]; index: number } {
+  const i = Math.min(index, blocks.length);
+  const cur = blocks[i];
+  if (cur && cur.kind === "text") {
+    const next = [...blocks];
+    next[i] = { ...cur, text: cur.text + text };
+    return { blocks: next, index: i };
   }
-  return [...blocks, { kind: "text", text }];
+  return { blocks: [...blocks, { kind: "text", text }], index: blocks.length };
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
@@ -204,6 +227,56 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     [],
   );
 
+  /**
+   * 把缓冲区里尚未渲染的文字**立即**落到消息里。
+   *
+   * action / notice / error 插入之前必须先调它：这些块走的是直接 append，
+   * 不经过打字机缓冲。若不排空，模型「先说一句再调工具」时动作卡片会
+   * 排在那句话**前面**。
+   */
+  const flushBuffer = useCallback(() => {
+    const buf = bufferRef.current;
+    const stream = streamRef.current;
+    if (!buf || !stream) return;
+    bufferRef.current = "";
+    appendBlocks(stream.sessionId, stream.messageId, (b) => {
+      const r = appendText(b, stream.textIndex, buf);
+      stream.textIndex = r.index;
+      return r.blocks;
+    });
+  }, [appendBlocks]);
+
+  /** 打字机消费一段文字：合并到当前正在写的 text block。 */
+  const writeToStream = useCallback(
+    (stream: StreamTarget, text: string) => {
+      appendBlocks(stream.sessionId, stream.messageId, (b) => {
+        const r = appendText(b, stream.textIndex, text);
+        stream.textIndex = r.index;
+        return r.blocks;
+      });
+    },
+    [appendBlocks],
+  );
+
+  /**
+   * 在消息末尾插入非文本块（动作 / 提示 / 错误）。
+   *
+   * 插入前先排空缓冲区，否则模型「先说一句再调工具」时动作卡片会排到
+   * 那句话**前面**。插入后还要把 `textIndex` 推到新块之后——后续正文必须
+   * 写在它后面，否则打字机会把新文字合并到动作卡片前面。
+   */
+  const insertTailBlock = useCallback(
+    (stream: StreamTarget, block: Block) => {
+      flushBuffer();
+      appendBlocks(stream.sessionId, stream.messageId, (b) => {
+        // 新块落在 b.length，下一个 text 块的位置就是 b.length + 1
+        stream.textIndex = b.length + 1;
+        return [...b, block];
+      });
+    },
+    [appendBlocks, flushBuffer],
+  );
+
   useEffect(() => {
     let disposed = false;
     const unsubs: Array<() => void> = [];
@@ -226,38 +299,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       (p) => {
         const stream = streamRef.current;
         if (!stream || stream.sessionId !== p.session_id) return;
-        appendBlocks(stream.sessionId, stream.messageId, (b) => [
-          ...b,
+        insertTailBlock(stream, {
           // ok 由后端给出；旧版本事件无此字段时按成功处理
-          {
-            kind: "action",
-            text: p.text ?? "",
-            ok: p.ok !== false,
-            detail: p.detail || undefined,
-          },
-        ]);
+          kind: "action",
+          text: p.text ?? "",
+          ok: p.ok !== false,
+          detail: p.detail || undefined,
+        });
       },
     );
     on<{ session_id: string; text?: string }>("agent:notice", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
-      appendBlocks(stream.sessionId, stream.messageId, (b) => [
-        ...b,
-        { kind: "notice", text: p.text ?? "" },
-      ]);
+      insertTailBlock(stream, { kind: "notice", text: p.text ?? "" });
     });
     on<{ session_id: string; text?: string }>("agent:error", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
       sawErrorRef.current = true;
-      appendBlocks(stream.sessionId, stream.messageId, (b) => [
-        ...b,
-        { kind: "error", text: p.text ?? "" },
-      ]);
+      insertTailBlock(stream, { kind: "error", text: p.text ?? "" });
     });
     on<{ session_id: string }>("agent:done", (p) => {
       const stream = streamRef.current;
       if (!stream || stream.sessionId !== p.session_id) return;
+      // 收尾时可能仍有未消费的正文，先落位再判断是否空消息
+      flushBuffer();
       appendBlocks(stream.sessionId, stream.messageId, (b) =>
         b.length === 0 ? [{ kind: "text", text: "" }] : b,
       );
@@ -301,7 +367,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       disposed = true;
       unsubs.forEach((u) => u());
     };
-  }, [appendBlocks]);
+  }, [insertTailBlock, flushBuffer]);
 
   useEffect(() => {
     const timer = window.setInterval(() => {
@@ -323,10 +389,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       n = Math.min(Math.max(n, 1), backlog);
       const take = chars.slice(0, n).join("");
       bufferRef.current = chars.slice(n).join("");
-      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, take));
+      writeToStream(stream, take);
     }, 30);
     return () => window.clearInterval(timer);
-  }, [appendBlocks]);
+  }, [writeToStream]);
 
   const drainBuffer = useCallback(async () => {
     const start = Date.now();
@@ -337,16 +403,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const n = Math.max(1, Math.ceil(chars.length / 3));
       const take = chars.slice(0, n).join("");
       bufferRef.current = chars.slice(n).join("");
-      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, take));
+      writeToStream(stream, take);
       await new Promise((r) => setTimeout(r, 30));
     }
     const rest = bufferRef.current;
     bufferRef.current = "";
     const stream = streamRef.current;
     if (rest && stream) {
-      appendBlocks(stream.sessionId, stream.messageId, (b) => mergeText(b, rest));
+      writeToStream(stream, rest);
     }
-  }, [appendBlocks]);
+  }, [writeToStream]);
 
   useEffect(() => {
     Promise.all([getWorkspace(), loadSessions(), getModels(), getSelectedModel()])
@@ -525,7 +591,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const title =
         current.title === "新对话" ? deriveTitle(text) : current.title;
       const messages = [...current.messages, userMsg, assistantMsg];
-      streamRef.current = { sessionId, messageId: assistantMsg.id };
+      streamRef.current = { sessionId, messageId: assistantMsg.id, textIndex: 0 };
       setState((s) => ({
         ...s,
         sessions: s.sessions.map((sess) =>
@@ -562,7 +628,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
 
   const stop = useCallback(async () => {
     try {
-      await stopMessageApi();
+      // 传当前会话：后端据此校验归属，避免停错流
+      await stopMessageApi(stateRef.current.activeId);
     } catch {
       /* 停止命令失败时维持现状 */
     }
