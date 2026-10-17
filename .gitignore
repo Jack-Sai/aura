@@ -40,3 +40,7 @@ Pinguo Design System.md
 .opencode/*
 .agents/*
 AGENTS.md
+
+# Agent workspace
+# agent 工作区数据（记忆、诊断笔记），同含本地路径，不入库。
+.workbuddy/
