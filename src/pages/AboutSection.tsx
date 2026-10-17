@@ -12,7 +12,7 @@ import {
   checkForUpdate,
   downloadAndInstall,
   restartApp,
-  type UpdateInfo,
+  type UpdateCheckResult,
 } from "../lib/updater";
 
 const REPO_URL = "https://github.com/Jack-Sai/aura";
@@ -20,8 +20,7 @@ const REPO_URL = "https://github.com/Jack-Sai/aura";
 type CheckState =
   | { kind: "idle" }
   | { kind: "checking" }
-  | { kind: "result"; info: UpdateInfo }
-  | { kind: "failed" }
+  | { kind: "checked"; result: UpdateCheckResult }
   | { kind: "downloading"; downloaded: number; total: number | null }
   | { kind: "installed" }
   | { kind: "error"; message: string };
@@ -46,9 +45,9 @@ export default function AboutSection() {
   async function handleCheck() {
     if (!version) return;
     setState({ kind: "checking" });
-    const info = await checkForUpdate(version);
-    // null 表示检查失败（网络不可达或配置缺失），与「已是最新」必须区分
-    setState(info ? { kind: "result", info } : { kind: "failed" });
+    const result = await checkForUpdate(version);
+    // 三种成功结局 + 两种失败结局，UI 分别提示，见 lib/updater.ts
+    setState({ kind: "checked", result });
   }
 
   async function handleInstall() {
@@ -110,24 +109,24 @@ export default function AboutSection() {
       <section>
         <h3 className="mb-3 text-sm font-medium">更新</h3>
         <div className="flex flex-col gap-2 rounded-card border border-line bg-surface p-4">
-          {state.kind === "result" && !state.info.available && (
+          {state.kind === "checked" && state.result.kind === "up-to-date" && (
             <p className="flex items-center gap-2 text-sm text-subtle">
               <Check size={14} className="text-brand" />
               已是最新版本
             </p>
           )}
 
-          {state.kind === "result" && state.info.available && (
+          {state.kind === "checked" && state.result.kind === "available" && (
             <>
               <p className="text-sm">
-                发现新版本 {state.info.version}
+                发现新版本 {state.result.info.version}
                 <span className="ml-2 text-xs text-subtle">
-                  当前 {state.info.currentVersion}
+                  当前 {state.result.info.currentVersion}
                 </span>
               </p>
-              {state.info.notes && (
+              {state.result.info.notes && (
                 <p className="max-h-32 overflow-y-auto whitespace-pre-wrap text-xs leading-relaxed text-subtle">
-                  {state.info.notes}
+                  {state.result.info.notes}
                 </p>
               )}
               <button
@@ -142,10 +141,30 @@ export default function AboutSection() {
             </>
           )}
 
-          {state.kind === "failed" && (
+          {state.kind === "checked" && state.result.kind === "unavailable" && (
             <p className="flex items-start gap-2 text-sm text-subtle">
               <TriangleAlert size={14} className="mt-0.5 shrink-0" />
-              <span>检查失败，请检查网络连接后重试。</span>
+              <span>
+                更新服务暂不可用（新版本可能刚发布，清单尚未上传完成），请稍后重试。
+              </span>
+            </p>
+          )}
+
+          {state.kind === "checked" && state.result.kind === "failed" && (
+            <div className="flex flex-col gap-1">
+              <p className="flex items-start gap-2 text-sm text-subtle">
+                <TriangleAlert size={14} className="mt-0.5 shrink-0" />
+                <span>检查失败，请检查网络连接后重试。</span>
+              </p>
+              <p className="ml-6 break-all text-xs text-subtle">
+                {state.result.reason}
+              </p>
+            </div>
+          )}
+
+          {state.kind === "checking" && (
+            <p className="text-xs text-subtle">
+              检查可能需要 20 秒以上（本地证书验证较慢），请耐心等待。
             </p>
           )}
 
