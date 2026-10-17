@@ -28,11 +28,15 @@ dist-ssr
 *.sw?
 
 # Dev docs
+# 这三个是本地维护文档，不随仓库分发。入库的只有 README.md。
 Dev Docs/
 DESIGN.md
 DEV.md
 Pinguo Design System.md
 
 # Agents
+# agent 指令文件与私有开发手册：内容含本地路径与签名密钥位置等信息，
+# 不应进入公开仓库。删掉这几行会让它们被 git 跟踪。
 .opencode/*
 .agents/*
+AGENTS.md
